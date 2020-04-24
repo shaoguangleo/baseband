@@ -56,6 +56,7 @@ class GUPPIFileNameSequencer(sf.FileNameSequencer):
     >>> gfs[10]
     'puppi_58132_J1810+1744_2176.0010.raw'
     """
+
     def __init__(self, template, header={}):
         self.items = {}
 
@@ -131,11 +132,10 @@ class GUPPIFileReader(VLBIFileReaderBase):
         frame_rate : `~astropy.units.Quantity`
             Frames per second.
         """
-        with self.temporary_offset():
-            self.seek(0)
+        with self.temporary_offset(0):
             header = self.read_header()
-            return (header.sample_rate /
-                    (header.samples_per_frame - header.overlap)).to(u.Hz)
+        return (header.sample_rate
+                / (header.samples_per_frame - header.overlap)).to(u.Hz)
 
 
 class GUPPIFileWriter(VLBIFileBase):
@@ -145,6 +145,7 @@ class GUPPIFileWriter(VLBIFileBase):
     wrapper.  The latter allows one to encode data in pieces, writing to disk
     as needed.
     """
+
     def write_frame(self, data, header=None, **kwargs):
         """Write a single frame (header plus payload).
 
@@ -203,8 +204,8 @@ class GUPPIStreamBase(VLBIStreamBase):
         # start of observation.  'PKTSIZE' is the packet size in bytes.  Here
         # we calculate the packets per frame.
         self._packets_per_frame = (
-            (header0.payload_nbytes - header0.overlap * header0._bpcs // 8) //
-            header0['PKTSIZE'])
+            (header0.payload_nbytes - header0.overlap * header0._bpcs // 8)
+            // header0['PKTSIZE'])
 
         # Set samples per frame to unique ones, excluding overlap.
         samples_per_frame = header0.samples_per_frame - header0.overlap
@@ -221,6 +222,15 @@ class GUPPIStreamBase(VLBIStreamBase):
                                  VLBIStreamBase.samples_per_frame.fset,
                                  doc=("Number of complete samples per frame, "
                                       "excluding overlap."))
+
+    def _get_index(self, header):
+        # Override to avoid calculating index from time.
+        return int(round((header['PKTIDX'] - self.header0['PKTIDX'])
+                         / self._packets_per_frame))
+
+    def _set_index(self, header, index):
+        header.update(pktidx=self.header0['PKTIDX']
+                      + index * self._packets_per_frame)
 
 
 class GUPPIStreamReader(GUPPIStreamBase, VLBIStreamReaderBase):
@@ -246,6 +256,7 @@ class GUPPIStreamReader(GUPPIStreamBase, VLBIStreamReaderBase):
         frame of the stream is always checked, so ``verify`` is effective only
         when reading sequences of files.  Default: `True`.
     """
+
     def __init__(self, fh_raw, squeeze=True, subset=(), verify=True):
         fh_raw = GUPPIFileReader(fh_raw)
         header0 = GUPPIHeader.fromfile(fh_raw)
@@ -257,17 +268,11 @@ class GUPPIStreamReader(GUPPIStreamBase, VLBIStreamReaderBase):
         """Header of the last file for this stream."""
         # Seek forward rather than backward, as last frame often has missing
         # bytes.
-        nframes, fframe = divmod(self.fh_raw.seek(0, 2),
-                                 self.header0.frame_nbytes)
-        self.fh_raw.seek((nframes - 1) * self.header0.frame_nbytes)
-        return self.fh_raw.read_header()
-
-    def _read_frame(self, index):
-        self.fh_raw.seek(index * self.header0.frame_nbytes)
-        frame = self.fh_raw.read_frame(memmap=True, verify=self.verify)
-        assert (frame.header['PKTIDX'] - self.header0['PKTIDX'] ==
-                index * self._packets_per_frame)
-        return frame
+        with self.fh_raw.temporary_offset() as fh_raw:
+            file_size = fh_raw.seek(0, 2)
+            nframes, fframe = divmod(file_size, self.header0.frame_nbytes)
+            fh_raw.seek((nframes - 1) * self.header0.frame_nbytes)
+            return fh_raw.read_header()
 
 
 class GUPPIStreamWriter(GUPPIStreamBase, VLBIStreamWriterBase):
@@ -285,6 +290,7 @@ class GUPPIStreamWriter(GUPPIStreamBase, VLBIStreamWriterBase):
         If `True` (default), `write` accepts squeezed arrays as input,
         and adds any dimensions of length unity.
     """
+
     def __init__(self, fh_raw, header0, squeeze=True):
         assert header0.get('OVERLAP', 0) == 0, ("overlap must be 0 when "
                                                 "writing GUPPI files.")
@@ -293,18 +299,12 @@ class GUPPIStreamWriter(GUPPIStreamBase, VLBIStreamWriterBase):
 
     def _make_frame(self, index):
         header = self.header0.copy()
-        header.update(pktidx=self.header0['PKTIDX'] +
-                      index * self._packets_per_frame)
+        self._set_index(header, index)
         return self.fh_raw.memmap_frame(header)
 
-    def _write_frame(self, frame, valid=True):
+    def _fh_raw_write_frame(self, frame):
         assert frame is self._frame
-        frame.valid = valid
-        # Deleting frame flushes memmap'd data to disk.
-        # (Of course, this gets deleted automatically when going out of
-        # scope, and furthermore the link in self._frame will still exist
-        # -- it only gets deleted in VLBIStreamWriter.write)
-        del frame
+        del self._frame
 
 
 opener = make_opener('GUPPI', globals(), doc="""

@@ -80,7 +80,7 @@ class VLBIPayloadBase:
         if payload_nbytes is None:
             payload_nbytes = cls._nbytes
             if payload_nbytes is None:
-                raise ValueError("payload_nbytes should be given as an argument "
+                raise ValueError("payload_nbytes should be passed in "
                                  "if no default is defined on the class.")
         s = fh.read(payload_nbytes)
         if len(s) < payload_nbytes:
@@ -89,7 +89,7 @@ class VLBIPayloadBase:
 
     def tofile(self, fh):
         """Write payload to filehandle."""
-        return fh.write(self.words.tostring())
+        return fh.write(self.words.tobytes())
 
     @classmethod
     def fromdata(cls, data, header=None, bps=2):
@@ -248,7 +248,7 @@ class VLBIPayloadBase:
 
     def __getitem__(self, item=()):
         decoder = self._decoders[self._coder]
-        if item is () or item == slice(None):
+        if item == () or item == slice(None):
             data = decoder(self.words)
             if self.complex_data:
                 data = data.view(self.dtype)
@@ -260,7 +260,7 @@ class VLBIPayloadBase:
                 .reshape(-1, *self.sample_shape)[data_slice])
 
     def __setitem__(self, item, data):
-        if item is () or item == slice(None):
+        if item == () or item == slice(None):
             words_slice = data_slice = slice(None)
         else:
             words_slice, data_slice = self._item_to_slices(item)
@@ -269,9 +269,9 @@ class VLBIPayloadBase:
         # Check if the new data spans an entire word and is correctly shaped.
         # If so, skip decoding.  If not, decode appropriate words and insert
         # new data.
-        if not (data_slice == slice(None) and
-                data.shape[-len(self.sample_shape):] == self.sample_shape and
-                data.dtype.kind == self.dtype.kind):
+        if not (data_slice == slice(None)
+                and data.shape[-len(self.sample_shape):] == self.sample_shape
+                and data.dtype.kind == self.dtype.kind):
             decoder = self._decoders[self._coder]
             current_data = decoder(self.words[words_slice])
             if self.complex_data:
@@ -289,11 +289,11 @@ class VLBIPayloadBase:
     data = property(__getitem__, doc="Full decoded payload.")
 
     def __eq__(self, other):
-        return (type(self) is type(other) and
-                self.shape == other.shape and
-                self.dtype == other.dtype and
-                (self.words is other.words or
-                 np.all(self.words == other.words)))
+        return (type(self) is type(other)
+                and self.shape == other.shape
+                and self.dtype == other.dtype
+                and (self.words is other.words
+                     or np.all(self.words == other.words)))
 
     def __ne__(self, other):
         return not self.__eq__(other)

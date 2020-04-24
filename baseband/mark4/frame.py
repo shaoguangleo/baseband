@@ -6,7 +6,7 @@ Implements a Mark4Payload class used to store payload words, and decode to
 or encode from a data array.
 
 For the specification, see
-http://www.haystack.mit.edu/tech/vlbi/mark5/docs/230.3.pdf
+https://www.haystack.mit.edu/tech/vlbi/mark5/docs/230.3.pdf
 """
 import operator
 
@@ -81,10 +81,10 @@ class Mark4Frame(VLBIFrameBase):
 
         None of the error flags are set.
         """
-        return not np.any(self.header['time_sync_error'] |
-                          self.header['internal_clock_error'] |
-                          self.header['processor_time_out_error'] |
-                          self.header['communication_error'])
+        return not np.any(self.header['time_sync_error']
+                          | self.header['internal_clock_error']
+                          | self.header['processor_time_out_error']
+                          | self.header['communication_error'])
 
     @valid.setter
     def valid(self, valid):
@@ -184,7 +184,7 @@ class Mark4Frame(VLBIFrameBase):
         """
         nsample = len(self)
         valid_start = nsample - len(self.payload)
-        if item is () or item == slice(None):
+        if item == () or item == slice(None):
             # Short-cut for full payload.
             return slice(None), (), self.shape, valid_start
 
@@ -257,7 +257,7 @@ class Mark4Frame(VLBIFrameBase):
             data[:ninvalid] = self.fill_value
             data[ninvalid:] = self.payload[payload_item]
 
-        if sample_index is ():
+        if sample_index == ():
             return data
         else:
             return data[(Ellipsis,) + sample_index]
@@ -280,14 +280,14 @@ class Mark4Frame(VLBIFrameBase):
         if ninvalid > 0:
             # See if data has enough dimensions so that we need to remove
             # the part that cannot set anything in the payload.
-            if sample_index is ():
+            if sample_index == ():
                 sample_ndim = len(self.sample_shape)
             else:
                 sample_ndim = np.empty(self.sample_shape)[sample_index].ndim
             if data.ndim == 1 + sample_ndim:
                 data = data[ninvalid:]
 
-        if sample_index is not ():
+        if sample_index != ():
             payload_item = (payload_item,) + sample_index
 
         self.payload[payload_item] = data

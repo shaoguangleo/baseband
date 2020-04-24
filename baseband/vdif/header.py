@@ -7,18 +7,18 @@ the information therein.
 
 For the VDIF specification, see https://www.vlbi.org/vdif
 """
-import operator
 
 import numpy as np
 import astropy.units as u
 from astropy.time import Time, TimeDelta
 
 from ..vlbi_base.header import (four_word_struct, eight_word_struct,
-                                HeaderParser, VLBIHeaderBase)
+                                fixedvalue, HeaderParser, VLBIHeaderBase)
 from ..mark5b.header import Mark5BHeader
 
 
-__all__ = ['VDIFHeader', 'VDIFBaseHeader', 'VDIFSampleRateHeader',
+__all__ = ['VDIFHeader', 'VDIFBaseHeader',
+           'VDIFNoSampleRateHeader', 'VDIFSampleRateHeader',
            'VDIFLegacyHeader', 'VDIFHeader0', 'VDIFHeader1',
            'VDIFHeader2', 'VDIFHeader3', 'VDIFMark5BHeader',
            'VDIF_HEADER_CLASSES']
@@ -51,7 +51,7 @@ class VDIFHeaderMeta(type):
 
         # Ignore VDIFHeader and VDIFBaseHeader, register others
         if name not in ('VDIFHeader', 'VDIFBaseHeader',
-                        'VDIFSampleRateHeader'):
+                        'VDIFNoSampleRateHeader', 'VDIFSampleRateHeader'):
 
             # Extract edv from class; convert to -1 if edv is False
             # for VDIFLegacy
@@ -71,8 +71,8 @@ class VDIFHeaderMeta(type):
 
         # If header parser has a sync pattern, append it as a private
         # attribute for cls.verify.
-        if (hasattr(cls, '_header_parser') and
-                'sync_pattern' in cls._header_parser.keys()):
+        if (hasattr(cls, '_header_parser')
+                and 'sync_pattern' in cls._header_parser.keys()):
             cls._sync_pattern = cls._header_parser.defaults['sync_pattern']
 
         super().__init__(name, bases, dct)
@@ -81,8 +81,8 @@ class VDIFHeaderMeta(type):
 class VDIFHeader(VLBIHeaderBase, metaclass=VDIFHeaderMeta):
     """VDIF Header, supporting different Extended Data Versions.
 
-    Will initialize a header instance appropriate for a given EDV.
-    See https://vlbi.org/wp-content/uploads/2019/03/VDIF_specification_Release_1.1.1.pdf
+    Will initialize a header instance appropriate for a given EDV.  See
+    https://vlbi.org/wp-content/uploads/2019/03/VDIF_specification_Release_1.1.1.pdf
 
     Parameters
     ----------
@@ -91,8 +91,9 @@ class VDIFHeader(VLBIHeaderBase, metaclass=VDIFHeaderMeta):
         If `None`, set to a tuple of zeros for later initialisation.
     edv : int, False, or None, optional
         Extended data version.  If `False`, a legacy header is used.
-        If `None` (default), it is determined from the header.  (Given it
-        explicitly is mostly useful for a slight speed-up.)
+        If `None` (default), it is determined from the header words;
+        hence, setting it explicitly is useful mostly for a slight speed-up.
+        (Subclasses can override this default with an ``_edv`` attribute.)
     verify : bool
         Whether to do basic verification of integrity.  Default: `True`.
 
@@ -102,8 +103,18 @@ class VDIFHeader(VLBIHeaderBase, metaclass=VDIFHeaderMeta):
         As appropriate for the extended data version.
     """
 
+    _invariants = set()
+    """Keys of invariant parts in all VDIF headers (none)."""
+    _stream_invariants = {'legacy_mode', 'vdif_version', 'lg2_nchan',
+                          'frame_length', 'complex_data', 'bits_per_sample',
+                          'station_id'}
+    """Keys of invariant parts in a given VDIF stream."""
+    # One would think one could add 'ref_epoch' here, but timestamps
+    # are broken for some threads of the EVN 2014 data, so apparently
+    # that is not a safe bet.
+
     _properties = ('frame_nbytes', 'payload_nbytes', 'bps', 'nchan',
-                   'samples_per_frame', 'station', 'time')
+                   'samples_per_frame', 'station', 'ref_time', 'time')
     """Properties accessible/usable in initialisation for all VDIF headers."""
 
     _edv = None
@@ -112,13 +123,16 @@ class VDIFHeader(VLBIHeaderBase, metaclass=VDIFHeaderMeta):
     def __new__(cls, words, edv=None, verify=True, **kwargs):
         # We use edv to define which class we return.
         if edv is None:
-            # If not given, we extract edv from the header words.  This uses
-            # parsers defined below, in VDIFBaseHeader.
-            base_parsers = VDIFBaseHeader._header_parser.parsers
-            if base_parsers['legacy_mode'](words):
-                edv = False
-            else:
-                edv = base_parsers['edv'](words)
+            # If not given, try the class default.
+            edv = cls._edv
+            # If that is not given either, try to extract edv from the header
+            # words, using parsers defined below, in VDIFBaseHeader.
+            if edv is None and words is not None:
+                base_parsers = VDIFBaseHeader._header_parser.parsers
+                if base_parsers['legacy_mode'](words):
+                    edv = False
+                else:
+                    edv = base_parsers['edv'](words)
 
         # Have to use key "-1" instead of "False" since the dict-lookup treats
         # 0 and False as identical.
@@ -136,12 +150,7 @@ class VDIFHeader(VLBIHeaderBase, metaclass=VDIFHeaderMeta):
 
     def same_stream(self, other):
         """Whether header is consistent with being from the same stream."""
-        # EDV and most parts of words 2 and 3 should be invariant.
-        return (self.edv == other.edv and
-                all(self[key] == other[key]
-                    for key in ('ref_epoch', 'vdif_version', 'frame_length',
-                                'complex_data', 'bits_per_sample',
-                                'station_id')))
+        return all(self[key] == other[key] for key in self.invariants())
 
     @classmethod
     def fromfile(cls, fh, edv=None, verify=True):
@@ -206,36 +215,15 @@ class VDIFHeader(VLBIHeaderBase, metaclass=VDIFHeaderMeta):
         Note that to set ``time`` to non-integer seconds one also needs to
         pass in ``frame_rate`` or ``sample_rate``.
         """
-        # TODO: here, we act differently depending on what information the
-        # VDIF header subclass can handle. Ideally, these different actions
-        # would be stored on the subclasses themselves, but then their super
-        # calls would end up here anyway.  One could by-pass those by checking
-        # whether cls is VDIFHeader.  But another issue is that the headers
-        # with a sample rate are currently subclasses of those without, so
-        # the super chain doesn't work well.
-        #
         # Some defaults that are not done by setting properties.
-        kwargs.setdefault('legacy_mode', True if edv is False else False)
-        kwargs['edv'] = edv
-        # For setting time, one normally needs a frame rate.  If headers
-        # provide this information, we can just proceed.
-        if 'time' not in kwargs or 'frame_rate' in VDIF_HEADER_CLASSES.get(
-                edv if edv is not False else -1, VDIFBaseHeader)._properties:
-            return super().fromvalues(edv, verify=verify, **kwargs)
-        # If the VDIF header subclass does not provide the frame rate, we
-        # first initialize without time, and then set the time explicitly
-        # using whatever frame_rate or sample_rate was passed.
-        time = kwargs.pop('time')
-        sample_rate = kwargs.pop('sample_rate', None)
-        frame_rate = kwargs.pop('frame_rate', None)
-        # Skip verification in super as we do it after time is set.
-        self = super().fromvalues(edv, verify=False, **kwargs)
-        if frame_rate is None and sample_rate is not None:
-            frame_rate = sample_rate / self.samples_per_frame
-        self.set_time(time, frame_rate=frame_rate)
-        if verify:
-            self.verify()
-        return self
+        kwargs.setdefault('legacy_mode', edv is False)
+        if edv is not False:
+            kwargs['edv'] = edv
+
+        if 'time' in kwargs and 'ref_epoch' not in kwargs:
+            kwargs.setdefault('ref_time', kwargs['time'])
+
+        return super().fromvalues(edv, verify=verify, **kwargs)
 
     @classmethod
     def fromkeys(cls, **kwargs):
@@ -389,6 +377,20 @@ class VDIFHeader(VLBIHeaderBase, metaclass=VDIFHeaderMeta):
         assert int(station_id) == station_id
         self['station_id'] = station_id
 
+    @property
+    def ref_time(self):
+        """Reference time for the header, as encoded by 'ref_epoch'.
+
+        If set, will use the nearest reference epoch before the given time.
+        """
+        return ref_epochs[self['ref_epoch']]
+
+    @ref_time.setter
+    def ref_time(self, ref_time):
+        assert ref_time > ref_epochs[0]
+        ref_index = np.searchsorted((ref_epochs - ref_time).sec, 0) - 1
+        self['ref_epoch'] = ref_index
+
     def get_time(self, frame_rate=None):
         """Converts ref_epoch, seconds, and frame_nr to Time object.
 
@@ -417,8 +419,8 @@ class VDIFHeader(VLBIHeaderBase, metaclass=VDIFHeaderMeta):
 
             offset = (frame_nr / frame_rate).to_value(u.s)
 
-        return (ref_epochs[self['ref_epoch']] +
-                TimeDelta(self['seconds'], offset, format='sec', scale='tai'))
+        return (self.ref_time
+                + TimeDelta(self['seconds'], offset, format='sec'))
 
     def set_time(self, time, frame_rate=None):
         """Converts Time object to ref_epoch, seconds, and frame_nr.
@@ -433,10 +435,7 @@ class VDIFHeader(VLBIHeaderBase, metaclass=VDIFHeaderMeta):
         frame_rate : `~astropy.units.Quantity`, optional
             For calculating 'frame_nr' from the fractional seconds.
         """
-        assert time > ref_epochs[0]
-        ref_index = np.searchsorted((ref_epochs - time).sec, 0) - 1
-        self['ref_epoch'] = ref_index
-        seconds = time - ref_epochs[ref_index]
+        seconds = time - self.ref_time
         int_sec = int(seconds.sec)
 
         # Round to nearest ns to handle timestamp difference errors.
@@ -462,7 +461,44 @@ class VDIFHeader(VLBIHeaderBase, metaclass=VDIFHeaderMeta):
     time = property(get_time, set_time)
 
 
-class VDIFLegacyHeader(VDIFHeader):
+class VDIFNoSampleRateHeader(VDIFHeader):
+    def update(self, *, time=None, frame_rate=None, sample_rate=None,
+               verify=True, **kwargs):
+        """Update the header by setting keywords or properties.
+
+        Here, any keywords matching header keys are applied first, and any
+        remaining ones are used to set header properties, in the order set
+        by the class (in ``_properties``).
+
+        Parameters
+        ----------
+        time : `~astropy.time.Time`, optional
+            A possible new time.  This is updated last.
+        frame_rate : `~astropy.units.Quantity`, optional
+            The frame rate to use in calculating the frame number from the
+            time.  Needed for times at non-integer seconds.  Ignored if no
+            ``time`` is given.
+        sample_rate : `~astropy.units.Quantity`, optional
+            Alternative to ``frame_rate``.  Ignored if no ``time`` is given,
+            or if ``frame_rate`` is given.
+        verify : bool, optional
+            If `True` (default), verify integrity after updating.
+        **kwargs
+            Arguments used to set keywords and properties.
+        """
+        super().update(verify=False, **kwargs)
+
+        if time is not None:
+            if frame_rate is None and sample_rate is not None:
+                frame_rate = sample_rate / self.samples_per_frame
+
+            self.set_time(time, frame_rate=frame_rate)
+
+        if verify:
+            self.verify()
+
+
+class VDIFLegacyHeader(VDIFNoSampleRateHeader):
     """Legacy VDIF header that uses only 4 32-bit words.
 
     See Section 6 of
@@ -479,7 +515,7 @@ class VDIFLegacyHeader(VDIFHeader):
          ('frame_nr', (1, 0, 24, 0x0)),
          ('vdif_version', (2, 29, 3, 0x1)),
          ('lg2_nchan', (2, 24, 5)),
-         ('frame_length', (2, 0, 24)),
+         ('frame_length', (2, 0, 24, 0x80)),
          ('complex_data', (3, 31, 1)),
          ('bits_per_sample', (3, 26, 5)),
          ('thread_id', (3, 16, 10, 0x0)),
@@ -492,6 +528,7 @@ class VDIFLegacyHeader(VDIFHeader):
         assert self.edv is False
         assert self['legacy_mode']
         assert len(self.words) == 4
+        assert self['frame_length'] >= 2
 
 
 class VDIFBaseHeader(VDIFHeader):
@@ -501,17 +538,26 @@ class VDIFBaseHeader(VDIFHeader):
         (('legacy_mode', (0, 30, 1, False)),  # Repeat, to change default.
          ('edv', (4, 24, 8))))
 
+    _invariants = (VDIFHeader._invariants
+                   | {'legacy_mode'})
+    """Keys of invariant parts in all VDIF non-legacy headers."""
+    _stream_invariants = (_invariants
+                          | VDIFHeader._stream_invariants
+                          | {'edv'})
+    """Keys of invariant parts in a given VDIF non-legacy stream."""
+
     def verify(self):
         """Basic checks of header integrity."""
         assert not self['legacy_mode']
         assert self.edv is None or self.edv == self['edv']
         assert len(self.words) == 8
+        assert self['frame_length'] >= 4
         # _sync_pattern is added by VDIFHeaderMeta.
         if 'sync_pattern' in self.keys():
             assert self['sync_pattern'] == self._sync_pattern
 
 
-class VDIFHeader0(VDIFBaseHeader):
+class VDIFHeader0(VDIFBaseHeader, VDIFNoSampleRateHeader):
     """VDIF Header for EDV=0.
 
     EDV=0 implies the extended user data fields are not used.
@@ -519,8 +565,8 @@ class VDIFHeader0(VDIFBaseHeader):
     _edv = 0
 
     def verify(self):
-        assert all(word == 0 for word in self.words[4:])
         super().verify()
+        assert all(word == 0 for word in self.words[4:])
 
 
 class VDIFSampleRateHeader(VDIFBaseHeader):
@@ -531,15 +577,18 @@ class VDIFSampleRateHeader(VDIFBaseHeader):
          ('sampling_rate', (4, 0, 23)),
          ('sync_pattern', (5, 0, 32, 0xACABFEED))))
 
+    _invariants = (VDIFBaseHeader._invariants
+                   | {'sync_pattern'})
+    """Keys of invariant parts in VDIF headers with sample rate."""
+    _stream_invariants = (_invariants
+                          | VDIFBaseHeader._stream_invariants
+                          | {'sampling_unit', 'sampling_rate'})
+    """Keys of invariant parts in a given VDIF sample-rate stream."""
+
     # Add extra properties, ensuring 'time' comes after 'sample_rate' and
     # 'frame_rate', since time setting requires the frame rate.
-    _properties = (VDIFBaseHeader._properties[:-1] +
-                   ('sample_rate', 'frame_rate', 'time'))
-
-    def same_stream(self, other):
-        return (super().same_stream(other) and
-                self.words[4] == other.words[4] and
-                self.words[5] == other.words[5])
+    _properties = (VDIFBaseHeader._properties[:-1]
+                   + ('sample_rate', 'frame_rate', 'time'))
 
     @property
     def sample_rate(self):
@@ -549,8 +598,8 @@ class VDIFSampleRateHeader(VDIFBaseHeader):
         sample rate for complex samples, or half the sample rate for real ones.
         """
         # Interprets sample rate correctly for EDV=3, but may not for EDV=1.
-        return u.Quantity(self['sampling_rate'] *
-                          (1 if self['complex_data'] else 2),
+        return u.Quantity(self['sampling_rate']
+                          * (1 if self['complex_data'] else 2),
                           u.MHz if self['sampling_unit'] else u.kHz)
 
     @sample_rate.setter
@@ -560,8 +609,8 @@ class VDIFSampleRateHeader(VDIFBaseHeader):
         assert sample_rate.to_value(u.Hz) % 1 == 0
         complex_sample_rate = sample_rate / (1 if self['complex_data'] else 2)
         self['sampling_unit'] = not (
-            complex_sample_rate.unit == u.kHz or
-            complex_sample_rate.to_value(u.MHz) % 1 != 0)
+            complex_sample_rate.unit == u.kHz
+            or complex_sample_rate.to_value(u.MHz) % 1 != 0)
         if self['sampling_unit']:
             self['sampling_rate'] = int(complex_sample_rate.to_value(u.MHz))
         else:
@@ -632,6 +681,10 @@ class VDIFHeader1(VDIFSampleRateHeader):
     _header_parser = VDIFSampleRateHeader._header_parser + HeaderParser(
         (('das_id', (6, 0, 64, 0x0)),))
 
+    _invariants = (VDIFSampleRateHeader._invariants
+                   | {'edv'})
+    """Keys of invariant parts in all VDIF EDV=1 headers."""
+
 
 class VDIFHeader3(VDIFSampleRateHeader):
     """VDIF Header for EDV=3.
@@ -651,12 +704,28 @@ class VDIFHeader3(VDIFSampleRateHeader):
          ('minor_rev', (7, 8, 4, 0x0)),
          ('personality', (7, 0, 8))))
 
+    _invariants = (VDIFSampleRateHeader._invariants
+                   | {'edv', 'frame_length'})
+    """Keys of invariant parts in all VDIF EDV=3 headers."""
+    _stream_invariants = (_invariants
+                          | VDIFSampleRateHeader._stream_invariants
+                          | {'major_rev', 'minor_rev', 'personality'})
+    """Keys of invariant parts in a given VDIF EDV=3 stream."""
+
     def verify(self):
         super().verify()
         assert self['frame_length'] == 629
 
+    @fixedvalue
+    def payload_nbytes(cls):
+        return 5000
 
-class VDIFHeader2(VDIFBaseHeader):
+    @fixedvalue
+    def frame_nbytes(cls):
+        return cls.nbytes + cls.payload_nbytes
+
+
+class VDIFHeader2(VDIFBaseHeader, VDIFNoSampleRateHeader):
     """VDIF Header for EDV=2.
 
     See https://vlbi.org/wp-content/uploads/2019/03/alma-vdif-edv.pdf
@@ -678,25 +747,41 @@ class VDIFHeader2(VDIFBaseHeader):
          ('PIC_status', (5, 0, 32)),
          ('PSN', (6, 0, 64))))
 
+    _invariants = (VDIFBaseHeader._invariants
+                   | {'edv', 'sync_pattern'})
+    """Keys of invariant parts in all VDIF EDV=2 headers."""
+    _stream_invariants = (_invariants
+                          | VDIFBaseHeader._stream_invariants)
+    """Keys of invariant parts in a given VDIF EDV=2 stream."""
+
     def verify(self):  # pragma: no cover
         super().verify()
         assert self['frame_length'] == 629 or self['frame_length'] == 1004
         assert self.bps == 2 and not self['complex_data']
 
 
-class VDIFMark5BHeader(VDIFBaseHeader, Mark5BHeader):
+class VDIFMark5BHeader(VDIFBaseHeader, VDIFNoSampleRateHeader, Mark5BHeader):
     """Mark 5B over VDIF (EDV=0xab).
 
     See https://vlbi.org/wp-content/uploads/2019/03/vdif_extension_0xab.pdf
     """
     _edv = 0xab
     # Repeat 'frame_length' to set default.
-    _header_parser = (VDIFBaseHeader._header_parser +
-                      HeaderParser((('frame_length', (2, 0, 24, 1254)),)) +
-                      HeaderParser(tuple(
+    _header_parser = (VDIFBaseHeader._header_parser
+                      + HeaderParser((('frame_length', (2, 0, 24, 1254)),))
+                      + HeaderParser(tuple(
                           ((k if k != 'frame_nr' else 'mark5b_frame_nr'),
                            (v[0] + 4,) + v[1:])
                           for (k, v) in Mark5BHeader._header_parser.items())))
+
+    _invariants = (VDIFBaseHeader._invariants
+                   | {'frame_length'}
+                   | Mark5BHeader._invariants)
+    """Keys of invariant parts in all VDIF-Mark5B headers."""
+    _stream_invariants = (_invariants
+                          | VDIFBaseHeader._stream_invariants
+                          | Mark5BHeader._stream_invariants)
+    """Keys of invariant parts in a given VDIF-Mark5B stream."""
 
     def verify(self):
         super().verify()
@@ -708,6 +793,14 @@ class VDIFMark5BHeader(VDIFBaseHeader, Mark5BHeader):
         assert seconds == self.seconds  # Latter decodes 'bcd_seconds'
         ref_mjd = ref_epochs[self['ref_epoch']].mjd + day
         assert ref_mjd % 1000 == self.jday  # Latter decodes 'bcd_jday'
+
+    @fixedvalue
+    def payload_nbytes(cls):
+        return Mark5BHeader.payload_nbytes
+
+    @fixedvalue
+    def frame_nbytes(cls):
+        return cls.nbytes + cls.payload_nbytes
 
     def __setitem__(self, item, value):
         super().__setitem__(item, value)
@@ -756,9 +849,9 @@ class VDIFMark5BHeader(VDIFBaseHeader, Mark5BHeader):
         else:
             fraction = (frame_nr / frame_rate).to_value(u.s)
 
-        return (ref_epochs[self['ref_epoch']] +
-                TimeDelta(self['seconds'], fraction,
-                          format='sec', scale='tai'))
+        return (ref_epochs[self['ref_epoch']]
+                + TimeDelta(self['seconds'], fraction,
+                            format='sec', scale='tai'))
 
     def set_time(self, time, frame_rate=None):
         Mark5BHeader.set_time(self, time, frame_rate)
