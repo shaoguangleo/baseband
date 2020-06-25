@@ -1,4 +1,7 @@
 # Licensed under the GPLv3 - see LICENSE
+import os
+import pickle
+
 import pytest
 import numpy as np
 import astropy.units as u
@@ -107,9 +110,10 @@ class TestGSB:
         fh = open(SAMPLE_RAWDUMP_HEADER, 'rt')
 
         header = gsb.GSBHeader.fromfile(fh, verify=True)
-        # Includes 1 trailing blank space, one carriage return.
+        # Includes 1 trailing blank space, one line separator
         header_nbytes = header.nbytes
-        assert header_nbytes == len(' '.join(header.words)) + 2
+        assert (header_nbytes
+                == len(' '.join(header.words) + ' ' + os.linesep))
         assert header.seek_offset(1) == header_nbytes
         assert header.seek_offset(12) == 12 * header_nbytes
 
@@ -133,7 +137,6 @@ class TestGSB:
         fh.seek(0)
         header_nbytes = header1.nbytes
         assert header_nbytes == header1.seek_offset(1)
-        assert header_nbytes == len(fh.readline())
         # Check that seek_offset is working properly.
         n_1000_0 = 1000 - 9995
         offset_to_1000_0 = header1.seek_offset(n_1000_0)
@@ -195,6 +198,16 @@ class TestGSB:
         assert header.gps_time == header.time
         assert abs(header.time
                    - Time('2013-07-28T02:53:55.3241088')) < 1.*u.ns
+
+    @pytest.mark.parametrize('sample', [
+        SAMPLE_RAWDUMP_HEADER, SAMPLE_PHASED_HEADER])
+    def test_pickle_header(self, sample):
+        with open(sample, 'rt') as fh:
+            header = gsb.GSBHeader.fromfile(fh, verify=True)
+
+        pickled = pickle.dumps(header)
+        recovered = pickle.loads(pickled)
+        assert recovered == header
 
     @pytest.mark.parametrize('sample,mode', [
         (SAMPLE_RAWDUMP_HEADER, 'rawdump'),
@@ -458,6 +471,20 @@ class TestGSB:
         with pytest.raises(TypeError):
             gsb.open(testfile, 'rt', raw='bla')
 
+    @pytest.mark.parametrize('sample', (SAMPLE_RAWDUMP_HEADER,
+                                        SAMPLE_PHASED_HEADER))
+    def test_pickle_timestamp_io(self, sample):
+        """Tests GSBTimeStampIO in base.py."""
+        with gsb.open(sample, 'rt') as fh:
+            fh.read_timestamp()
+            pickled = pickle.dumps(fh)
+            header1 = fh.read_timestamp()
+
+        with pickle.loads(pickled) as fh2:
+            header2 = fh2.read_timestamp()
+
+        assert header2 == header1
+
     def test_rawfile_io(self, tmpdir):
         """Tests GSBFileReader and GSBFileWriter in base.py."""
         with open(SAMPLE_RAWDUMP, 'rb') as fh:
@@ -469,6 +496,19 @@ class TestGSB:
         with gsb.open(testfile, 'rb', payload_nbytes=2**12) as fh:
             payload2 = fh.read_payload()
             assert payload2 == payload1
+
+    def test_pickle_filereader(self):
+        """Tests GSBFileReader in base.py."""
+        with gsb.open(SAMPLE_RAWDUMP, 'rb', payload_nbytes=2**12, nchan=1,
+                      bps=4, complex_data=False) as fh:
+            fh.read_payload()
+            pickled = pickle.dumps(fh)
+            payload1 = fh.read_payload()
+
+        with pickle.loads(pickled) as fh2:
+            payload2 = fh2.read_payload()
+
+        assert payload2 == payload1
 
     def test_rawfile_repr(self):
         with gsb.open(SAMPLE_RAWDUMP, 'rb', payload_nbytes=2**12, nchan=1,
@@ -504,7 +544,7 @@ class TestGSB:
             with open(SAMPLE_RAWDUMP_HEADER, 'rt') as ft, \
                     open(SAMPLE_RAWDUMP, 'rb') as fraw:
                 ft.seek(frame1.header.seek_offset(9))
-                fraw.seek(9 * fh_r._payload_nbytes)
+                fraw.seek(9 * fh_r.payload_nbytes)
                 frame10 = gsb.GSBFrame.fromfile(
                     ft, fraw, bps=4, payload_nbytes=self.payload_nbytes)
             assert fh_r._last_header == frame10.header
@@ -588,13 +628,14 @@ class TestGSB:
             assert np.all(check == data2)
 
         # Test that opening that raises an exception correctly handles
-        # file closing. (Note that the timestamp file always gets closed).
-        with open(str(tmpdir.join('test.timestamp')), 'w+b') as sh, \
+        # file closing.
+        with open(str(tmpdir.join('test.timestamp')), 'wt') as sh, \
                 open(str(tmpdir.join('test.dat')), 'w+b') as sp:
             with pytest.raises(u.UnitsError):
                 gsb.open(sh, 'ws', raw=sp, sample_rate=3.9736/u.m,
                          samples_per_frame=(self.payload_nbytes * (8 // bps)),
                          **header0)
+            assert not sh.closed
             assert not sp.closed
 
         # Test that an incomplete last header leads to the second-to-last
@@ -626,9 +667,45 @@ class TestGSB:
         # Test not passing a sample rate and samples per frame to reader
         # (can't test reading, since the sample file is tiny).
         with gsb.open(SAMPLE_RAWDUMP_HEADER, 'rs', raw=SAMPLE_RAWDUMP) as fh_r:
-            assert fh_r.sample_rate == (100. / 3.) * u.MHz
+            assert u.isclose(fh_r.sample_rate, (100. / 3.) * u.MHz,
+                             rtol=2**-52)
             assert fh_r.samples_per_frame == 2**23
-            assert fh_r._payload_nbytes == 2**22
+            assert fh_r.payload_nbytes == 2**22
+
+    @pytest.mark.parametrize('sample_header,sample_data', [
+        (SAMPLE_RAWDUMP_HEADER, SAMPLE_RAWDUMP),
+        (SAMPLE_PHASED_HEADER, SAMPLE_PHASED)])
+    def test_pickle(self, sample_header, sample_data):
+        if sample_header is SAMPLE_RAWDUMP_HEADER:
+            sample_rate = self.frame_rate * self.payload_nbytes * 2
+        else:
+            sample_rate = self.frame_rate * self.payload_nbytes / 512
+        # Only simple tests here; more complete ones in vdif.
+        with gsb.open(sample_header, 'rs', raw=sample_data,
+                      sample_rate=sample_rate,
+                      payload_nbytes=self.payload_nbytes,
+                      squeeze=False) as fh:
+            fh.seek(6)
+            pickled = pickle.dumps(fh)
+            d1_3 = fh.read(3)
+            with pickle.loads(pickled) as fh2:
+                assert fh2.tell() == 6
+                d2_10 = fh2.read(10)
+
+            assert np.all(d2_10[:3] == d1_3)
+            assert fh.tell() == 9
+
+        with pickle.loads(pickled) as fh3:
+            assert fh3.tell() == 6
+            d3_5 = fh3.read(5)
+
+        assert np.all(d3_5[:3] == d1_3)
+
+        closed = pickle.dumps(fh)
+        with pickle.loads(closed) as fh4:
+            assert fh4.closed
+            with pytest.raises(ValueError):
+                fh4.read(1)
 
     def test_phased_stream(self, tmpdir):
         bps = 8
@@ -658,7 +735,7 @@ class TestGSB:
             # Seek last offset.
             with open(SAMPLE_PHASED_HEADER, 'rt') as ft:
                 ft.seek(frame1.header.seek_offset(9))
-                self.seek_phased_rawfiles(fraw, 9 * fh_r._payload_nbytes)
+                self.seek_phased_rawfiles(fraw, 9 * fh_r.payload_nbytes)
                 frame10 = gsb.GSBFrame.fromfile(
                     ft, fraw, payload_nbytes=self.payload_nbytes, nchan=nchan,
                     bps=bps, complex_data=True)
@@ -743,7 +820,7 @@ class TestGSB:
                       sample_rate=sample_rate,
                       samples_per_frame=(self.payload_nbytes
                                          // nchan)) as fh_r, \
-                open(str(tmpdir.join('test_time.timestamp')), 'w+b') as sh,\
+                open(str(tmpdir.join('test_time.timestamp')), 'w+t') as sh,\
                 open(str(tmpdir.join('test0.dat')), 'w+b') as sp0, \
                 open(str(tmpdir.join('test1.dat')), 'w+b') as sp1, \
                 open(str(tmpdir.join('test2.dat')), 'w+b') as sp2, \
@@ -779,49 +856,178 @@ class TestGSB:
             assert np.all(fh_r.read() == data1)
             fh_w.close()
 
+    @pytest.mark.parametrize('raw', [SAMPLE_PHASED, SAMPLE_PHASED[:1]])
+    def test_phased_stream_one_file_per_pol(self, raw):
+        sample_rate = self.frame_rate * self.payload_nbytes / 512
+        with gsb.open(SAMPLE_PHASED_HEADER, 'rs', raw=raw,
+                      sample_rate=sample_rate,
+                      payload_nbytes=self.payload_nbytes) as fh_2file:
+            full_data = fh_2file.read()
+
+        raw_one_file = [pol_files[:1] for pol_files in raw]
+        with gsb.open(SAMPLE_PHASED_HEADER, 'rs', raw=raw_one_file,
+                      sample_rate=sample_rate/2,
+                      payload_nbytes=self.payload_nbytes) as fh_1file:
+            data = fh_1file.read()
+        assert data.shape[0] == full_data.shape[0] // 2
+        assert data.shape[1:] == full_data.shape[1:]
+        samples_per_block = fh_2file.samples_per_frame // 2
+        assert samples_per_block == fh_1file.samples_per_frame
+        blocked = full_data.reshape((-1, 2, samples_per_block)
+                                    + fh_1file.sample_shape)
+        expected = blocked[:, 0].reshape((-1,)+fh_1file.sample_shape)
+        assert np.all(data == expected)
+
+    def test_phased_stream_one_file(self):
+        raw = [[SAMPLE_PHASED[0][0]]]
+        sample_rate = self.frame_rate * self.payload_nbytes / 512 / 2
+        with gsb.open(SAMPLE_PHASED_HEADER, 'rs', raw=raw,
+                      sample_rate=sample_rate,
+                      payload_nbytes=self.payload_nbytes) as fh:
+            ref_data = fh.read()
+
+        raw_one_file = raw[0][0]
+        with gsb.open(SAMPLE_PHASED_HEADER, 'rs', raw=raw_one_file,
+                      sample_rate=sample_rate,
+                      payload_nbytes=self.payload_nbytes) as fh_1file:
+            assert fh_1file.header0.mode == 'phased'
+            data = fh_1file.read()
+
+        assert np.all(data == ref_data)
+
+    def test_phased_write_one_file(self, tmpdir):
+        # With a single file, one does have to pass in header_mode
+        # to get phased.
+        with gsb.open(str(tmpdir.join('test.timstamp')), 'ws',
+                      raw=str(tmpdir.join('test.raw')),
+                      header_mode='phased',
+                      time=Time('2010-10-10')) as fh_right:
+            assert fh_right.header0.mode == 'phased'
+
+        with gsb.open(str(tmpdir.join('test.timstamp')), 'ws',
+                      raw=str(tmpdir.join('test.raw')),
+                      time=Time('2010-10-10')) as fh_wrong:
+            assert fh_wrong.header0.mode == 'rawdump'
+
+    @pytest.mark.parametrize('stop, nframes', [(-7, 9), (97, 1)])
+    def test_stream_incomplete_header(self, stop, nframes, tmpdir):
         # Test that an incomplete last header leads to the second-to-last
         # header being used, and raises a warning.
+        sample_rate = self.frame_rate * self.payload_nbytes / 512
         filename_incompletehead = str(
             tmpdir.join('test_incomplete_header.timestamp'))
         with open(SAMPLE_PHASED_HEADER, 'rt') as fh, \
                 open(filename_incompletehead, 'wt') as fw:
-            fw.write(fh.read()[:-7])
+            fw.write(fh.read()[:stop])
         with gsb.open(filename_incompletehead, 'rs', raw=SAMPLE_PHASED,
                       sample_rate=sample_rate,
                       payload_nbytes=self.payload_nbytes,
                       squeeze=False) as fh_r:
             with pytest.warns(UserWarning, match='second-to-last entry'):
-                fh_r._last_header
-            assert fh_r.shape[0] == 9 * fh_r.samples_per_frame
-        with open(SAMPLE_PHASED_HEADER, 'rt') as fh, \
-                open(filename_incompletehead, 'wt') as fw:
-            fw.write(fh.read()[:97])
-        with gsb.open(filename_incompletehead, 'rs', raw=SAMPLE_PHASED,
-                      sample_rate=sample_rate,
-                      payload_nbytes=self.payload_nbytes,
-                      squeeze=False) as fh_r:
-            with pytest.warns(UserWarning, match='second-to-last entry'):
-                fh_r._last_header
-            assert fh_r.shape[0] == fh_r.samples_per_frame
-            assert fh_r._last_header == fh_r.header0
+                shape = fh_r.shape
 
+            assert shape[0] == nframes * fh_r.samples_per_frame
+
+            info = fh_r.info
+            assert info.errors == {}
+            assert info.warnings.keys() == {'number_of_frames',
+                                            'consistent'}
+            assert 'incomplete' in info.warnings['number_of_frames']
+            assert 'contains more bytes' in info.warnings['consistent']
+
+    @pytest.mark.parametrize('raw, nstream', [
+        (SAMPLE_PHASED, 2),
+        (SAMPLE_PHASED[:1], 2),
+        ((SAMPLE_PHASED[0][:1], SAMPLE_PHASED[1][:1]), 1),
+        (SAMPLE_PHASED[1][1], 1),
+    ])
+    def test_stream_reader_defaults(self, raw, nstream):
         # Test not passing a sample rate and samples per frame to reader
         # (can't test reading, since the sample file is tiny).
-        with gsb.open(SAMPLE_PHASED_HEADER, 'rs', raw=SAMPLE_PHASED) as fh_r:
-            assert fh_r.sample_rate == (fh_r.samples_per_frame
-                                        * (100. / 3. / 2.**23) * u.MHz)
-            assert fh_r.samples_per_frame == 2**13  # 2**23 / 1024
-            assert fh_r._payload_nbytes == 2**22
+        default_frame_rate = (100/6/2**22)*u.MHz
+        with gsb.open(SAMPLE_PHASED_HEADER, 'rs', raw=raw) as fh_r:
+            assert fh_r.sample_shape[-1] == 512
+            assert fh_r.payload_nbytes == 2**22
+            assert fh_r.samples_per_frame == nstream * 2**12  # 2**22 / 1024
+            assert u.isclose(fh_r.sample_rate,
+                             fh_r.samples_per_frame*default_frame_rate,
+                             rtol=2**-52)
 
     def test_stream_invalid(self, tmpdir):
         with pytest.raises(ValueError):
             # no r or w in mode
             gsb.open('ts.dat', 's')
-        with pytest.raises(TypeError), \
-                open(str(tmpdir.join('test.timestamp')), 'w+t') as s:
-            # TextIOBase for fh
-            gsb.open(s, 'rt')
         with pytest.raises(OSError):
             # non-existing file
             gsb.open(str(tmpdir.join('ts.bla')),
                      raw=str(tmpdir.join('raw.bla')))
+        with pytest.raises(ValueError, match='inconsistent'):
+            gsb.open(SAMPLE_PHASED_HEADER, 'rs', raw=SAMPLE_PHASED,
+                     payload_nbytes=32, samples_per_frame=400)
+
+    @pytest.mark.parametrize('ts,raw,mode', [
+        (SAMPLE_RAWDUMP_HEADER, SAMPLE_RAWDUMP, 'rawdump'),
+        (SAMPLE_PHASED_HEADER, SAMPLE_PHASED, 'phased-2pol'),
+        (SAMPLE_PHASED_HEADER, SAMPLE_PHASED[0], 'phased-1pol'),
+        (SAMPLE_PHASED_HEADER, SAMPLE_PHASED[:1], 'phased-1pol'),
+        (SAMPLE_PHASED_HEADER, [SAMPLE_PHASED[0][:1],
+                                SAMPLE_PHASED[1][:1]], 'unsplit-2pol'),
+        (SAMPLE_PHASED_HEADER, [SAMPLE_PHASED[0][1:]], 'unsplit-1pol'),
+        (SAMPLE_PHASED_HEADER, SAMPLE_PHASED[0][1], 'unsplit-1pol'),
+    ])
+    def test_stream_info(self, ts, raw, mode):
+        bps = 4 if mode == 'rawdump' else 8
+        nchan = 1 if mode == 'rawdump' else 512
+        sample_rate = (self.frame_rate * self.payload_nbytes
+                       * (8 // bps) / nchan)
+        if mode.startswith('unsplit'):
+            sample_rate /= 2
+        with gsb.open(ts, 'rs', raw=raw, sample_rate=sample_rate,
+                      payload_nbytes=self.payload_nbytes) as fh:
+            info = fh.info
+            assert info.format == 'gsb'
+            assert info.consistent
+            assert info.readable
+            assert info.errors == {}
+            assert info.warnings == {}
+            assert info.file_info.missing == {}
+            assert info.checks == {'decodable': True,
+                                   'consistent': True}
+            assert info.bps == bps
+            assert info.payload_nbytes == self.payload_nbytes
+            assert u.isclose(info.sample_rate, sample_rate)
+            if mode == 'rawdump':
+                assert not info.complex_data
+                assert info.shape == (81920,)
+                assert info.n_raw == 1
+            else:
+                assert info.complex_data
+                if mode.startswith('unsplit'):
+                    assert info.shape[0] == 40
+                    assert info.n_raw == 1
+                else:
+                    assert info.shape[0] == 80
+                    assert info.n_raw == 2
+                if mode.endswith('2pol'):
+                    assert info.shape[1:] == (2, nchan)
+                else:
+                    assert info.shape[1:] == (nchan,)
+
+    @pytest.mark.parametrize('ts,raw', [
+        (SAMPLE_PHASED_HEADER, [SAMPLE_PHASED[0][:1],
+                                SAMPLE_PHASED[1][:1]]),
+        (SAMPLE_PHASED_HEADER, [SAMPLE_PHASED[0][1:]]),
+        (SAMPLE_PHASED_HEADER, SAMPLE_PHASED[0][1]),
+    ])
+    def test_stream_info_inconsistent(self, ts, raw):
+        bps = 8
+        nchan = 512
+        sample_rate = (self.frame_rate * self.payload_nbytes
+                       * (8 // bps) / nchan)
+        with gsb.open(ts, 'rs', raw=raw, sample_rate=sample_rate,
+                      payload_nbytes=self.payload_nbytes, nchan=512) as fh:
+            info = fh.info
+            assert not fh.info.consistent
+            assert isinstance(fh.info.errors['consistent'], EOFError)
+            assert 'factor of two' in str(fh.info.errors['consistent'])
+            assert info.sample_rate == sample_rate

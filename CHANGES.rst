@@ -4,17 +4,79 @@
 - This future version will likely only support python 3.7, numpy 1.17 and
   astropy 4.0.
 
+New Features
+------------
+
+- Baseband now provides an ``baseband.io`` entry point, which allows other
+  packages to make new readers accessible to baseband by defining an entry
+  point in their ``setup.cfg``. [#418]
+
+Bug Fixes
+---------
+
+- Extraneous arguments to stream writers are no longer ignored, but give
+  rise to a ``TypeError``. [#417]
+
+Other Changes and Additions
+---------------------------
+
+- All baseband formats now support passing in template strings for stream
+  readers and writers (e.g., ``'{file_nr:07d}.vdif'``). [#417]
+
+- All ``StreamWriters`` now require an explicit ``header0`` to be passed
+  in (as was already the case for DADA and GUPPI). Creation of a ``header0``
+  from keyword arguments is now done inside the opener. [#417]
+
+- The headers for VDIF and Mark 4 now expose standard ``complex_data``
+  and ``sample_shape`` properties, to match what is done for the other
+  headers. Mark 5B headers expose only ``complex_data``, as the sample
+  shape cannot be inferred from the header. [#414]
+
+- General classes to help writing ``open`` and ``info`` functions are now
+  provided in ``baseband.vlbi_base.FileOpener`` and ``FileInfo``. [#418]
+
+3.2.1 (2020-06-24)
+==================
+
+Bug Fixes
+---------
+
+- For GSB phased data, fix the interpretation of ``sample_rate`` in
+  calculating ``payload_nbytes``. [#410]
+
+- Fix pickling for GSB phased data.
+
+3.2 (2020-06-11)
+================
+
+New Features
+------------
+
+- All file and stream readers can now be pickled.  Writers still cannot,
+  since those do not allow appending. [#395]
+
 Bug Fixes
 ---------
 
 - Mark 4 data written with the non-standard channel assignment used at Ft
   can now be read and written. [#380]
 
+- For GSB phased data, the default ``payload_nbytes`` has now been corrected
+  so that it is always 4 MiB. [#401]
+
+- For GSB phased data, the ``sample_rate`` argument is now correctly
+  interpreted as the rate of complete samples (previously, the number of
+  channels were ignored). [#401]
+
 Other Changes and Additions
 ---------------------------
 
 - The ``temporary_offset`` context manager of file readers now allows to
   pass in a possible initial offset to go to. [#390]
+
+- The GSB stream reader ``.info`` has been updated to include a consistency
+  check of the size of the raw files with the number of frames inferred
+  from the timestamp file. [#407]
 
 3.1.1 (2020-04-05)
 ==================

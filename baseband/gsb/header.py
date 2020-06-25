@@ -7,11 +7,13 @@ http://gmrt.ncra.tifr.res.in/gmrt_hpage/sub_system/gmrt_gsb/GSB_beam_timestamp_n
 and for rawdump data
 http://gmrt.ncra.tifr.res.in/gmrt_hpage/sub_system/gmrt_gsb/GSB_rawdump_data_format_v2.pdf
 """
+import os
+
 import numpy as np
 from astropy import units as u, _erfa as erfa
 from astropy.time import Time, TimeString
 
-from ..vlbi_base.header import VLBIHeaderBase, HeaderParser
+from ..vlbi_base.header import ParsedHeaderBase, HeaderParser
 
 
 __all__ = ['TimeGSB', 'GSBHeader', 'GSBRawdumpHeader', 'GSBPhasedHeader']
@@ -47,17 +49,10 @@ class TimeGSB(TimeString):
         self.jd1, self.jd2 = erfa.dtf2d(
             self.scale.upper().encode('utf8'), *iterator.operands[1:])
 
-    # This can be removed once we only support astropy >=3.1.
-    _new_ihmsfs_dtype = np.dtype([(c, np.intc) for c in 'hmsf'])
-
     def to_value(self, parent=None):
         scale = self.scale.upper().encode('ascii'),
         iys, ims, ids, ihmsfs = erfa.d2dtf(scale, self.precision,
                                            self.jd1, self.jd2)
-        # For ASTROPY_LT_3_1, convert to the new structured array dtype that is
-        # returned by the new erfa gufuncs.
-        if not ihmsfs.dtype.names:
-            ihmsfs = ihmsfs.view(self._new_ihmsfs_dtype)
         ihrs = ihmsfs['h']
         imins = ihmsfs['m']
         isecs = ihmsfs['s']
@@ -103,7 +98,7 @@ def get_default(index, length, forward, backward, default=None):
     return default
 
 
-class GSBHeader(VLBIHeaderBase):
+class GSBHeader(ParsedHeaderBase):
     """GSB Header, based on a line from a timestamp file.
 
     Parameters
@@ -128,33 +123,32 @@ class GSBHeader(VLBIHeaderBase):
     _mode = None
     _gsb_header_classes = {}
 
-    def __new__(cls, words, mode=None, nbytes=None, utc_offset=5.5*u.hr,
+    def __new__(cls, words=None, mode=None, nbytes=None, utc_offset=5.5*u.hr,
                 verify=True):
 
-        if mode is None:
-            if words is None:
-                raise TypeError("cannot construct an empty GSB header without "
-                                "knowing the mode.")
-            mode = 'rawdump' if len(words) == 7 else 'phased'
+        if cls is GSBHeader:
+            if mode is None:
+                if words is None:
+                    raise TypeError("cannot construct an empty GSB header "
+                                    "without knowing the mode.")
 
-        cls = cls._gsb_header_classes.get(mode)
-        self = super().__new__(cls)
-        # We intialise VDIFHeader subclasses, so their __init__ will be called.
-        return self
+                mode = 'rawdump' if len(words) == 7 else 'phased'
+
+            cls = cls._gsb_header_classes.get(mode)
+
+        # We intialise GSBHeader subclasses, so their __init__ will be called.
+        return super().__new__(cls)
 
     def __init__(self, words, mode=None, nbytes=None, utc_offset=5.5*u.hr,
                  verify=True):
         if words is None:
-            self.words = [''] * self._number_of_words
-        else:
-            self.words = words
+            words = [''] * self._number_of_words
         if nbytes is not None:
             self._nbytes = nbytes
         if mode is not None:
             self._mode = mode
         self.utc_offset = utc_offset
-        if verify:
-            self.verify()
+        super().__init__(words, verify=verify)
 
     def verify(self):
         assert self.mode == self.__class__._mode
@@ -173,7 +167,7 @@ class GSBHeader(VLBIHeaderBase):
         return.
         """
         if self._nbytes is None:
-            self._nbytes = len(' '.join(self.words)) + 2
+            self._nbytes = len(' '.join(self.words) + os.linesep)
         return self._nbytes
 
     @classmethod
@@ -238,10 +232,6 @@ class GSBHeader(VLBIHeaderBase):
         if nbytes is None:
             nbytes = self.nbytes
         return n * nbytes
-
-    def __eq__(self, other):
-        return (type(self) is type(other)
-                and tuple(self.words) == tuple(other.words))
 
 
 class GSBRawdumpHeader(GSBHeader):

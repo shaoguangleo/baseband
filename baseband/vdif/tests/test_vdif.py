@@ -1,4 +1,6 @@
 # Licensed under the GPLv3 - see LICENSE
+import pickle
+
 import pytest
 import numpy as np
 from astropy.time import Time
@@ -6,7 +8,6 @@ import astropy.units as u
 
 from ... import vdif, vlbi_base
 from ...vlbi_base.base import HeaderNotFoundError
-from ...helpers import sequentialfile as sf
 from ...data import (SAMPLE_VDIF as SAMPLE_FILE, SAMPLE_VLBI_VDIF as
                      SAMPLE_VLBI, SAMPLE_MWA_VDIF as SAMPLE_MWA,
                      SAMPLE_AROCHIME_VDIF as SAMPLE_AROCHIME,
@@ -58,6 +59,7 @@ class TestVDIF:
         assert header.samples_per_frame == 20000
         assert header.nchan == 1
         assert header.bps == 2
+        assert not header.complex_data
         assert not header['complex_data']
         assert header.mutable is False
         with open(str(tmpdir.join('test.vdif')), 'w+b') as s:
@@ -140,7 +142,7 @@ class TestVDIF:
         # frame_nr is used.
         header7 = vdif.VDIFHeader.fromvalues(
             edv=0, ref_epoch=headerT['ref_epoch'], seconds=headerT['seconds'],
-            frame_nr=headerT['frame_nr'], complex_data=headerT['complex_data'],
+            frame_nr=headerT['frame_nr'], complex_data=headerT.complex_data,
             samples_per_frame=headerT.samples_per_frame, bps=headerT.bps,
             station=headerT.station, thread_id=headerT['thread_id'])
         assert header7['ref_epoch'] == headerT['ref_epoch']
@@ -149,7 +151,7 @@ class TestVDIF:
         # The same header, but created by passing time and sample rate.
         header7_usetime = vdif.VDIFHeader.fromvalues(
             edv=0, time=headerT.time, sample_rate=headerT.sample_rate,
-            complex_data=headerT['complex_data'], bps=headerT.bps,
+            complex_data=headerT.complex_data, bps=headerT.bps,
             samples_per_frame=headerT.samples_per_frame,
             station=headerT.station, thread_id=headerT['thread_id'])
         assert header7_usetime == header7
@@ -159,7 +161,7 @@ class TestVDIF:
         header8 = vdif.VDIFHeader.fromvalues(
             edv=0, ref_epoch=0, time=headerT.time,
             sample_rate=headerT.sample_rate,
-            complex_data=headerT['complex_data'], bps=headerT.bps,
+            complex_data=headerT.complex_data, bps=headerT.bps,
             samples_per_frame=headerT.samples_per_frame,
             station=headerT.station, thread_id=headerT['thread_id'])
         assert header8.ref_time == Time('2000-01-01')
@@ -170,7 +172,7 @@ class TestVDIF:
         # Without a sample rate or frame_nr, cannot initialize using time.
         with pytest.raises(ValueError):
             vdif.VDIFHeader.fromvalues(
-                edv=0, time=headerT.time, complex_data=headerT['complex_data'],
+                edv=0, time=headerT.time, complex_data=headerT.complex_data,
                 bps=headerT.bps, samples_per_frame=headerT.samples_per_frame,
                 station=headerT.station, thread_id=headerT['thread_id'])
 
@@ -179,7 +181,7 @@ class TestVDIF:
             vdif.VDIFHeader.fromvalues(
                 edv=1, time=headerT.time, station=headerT.station,
                 samples_per_frame=headerT.samples_per_frame,
-                bps=headerT.bps, complex_data=headerT['complex_data'],
+                bps=headerT.bps, complex_data=headerT.complex_data,
                 thread_id=headerT['thread_id'])
 
         # Check rounding in corner case, both with and without changing
@@ -228,19 +230,19 @@ class TestVDIF:
 
     @pytest.mark.parametrize('edv', [0, 1])  # Others have fixed length
     def test_header_minimal_length(self, edv):
-        for l in range(4):
+        for fl in range(4):
             with pytest.raises(AssertionError):
                 # Less than header length.
-                vdif.VDIFHeader.fromvalues(edv=edv, frame_length=l)
+                vdif.VDIFHeader.fromvalues(edv=edv, frame_length=fl)
 
         header = vdif.VDIFHeader.fromvalues(edv=edv, frame_length=4)
         assert header.payload_nbytes == 0
 
     def test_legacy_header_minimal_length(self):
-        for l in range(2):
+        for fl in range(2):
             with pytest.raises(AssertionError):
                 # Less than header length.
-                vdif.VDIFHeader.fromvalues(edv=False, frame_length=l)
+                vdif.VDIFHeader.fromvalues(edv=False, frame_length=fl)
         header = vdif.VDIFHeader.fromvalues(edv=False, frame_length=2)
         assert header.payload_nbytes == 0
 
@@ -276,7 +278,7 @@ class TestVDIF:
             edv=0x58, time=header.time,
             samples_per_frame=header.samples_per_frame,
             station=header.station, sample_rate=header.sample_rate,
-            bps=header.bps, complex_data=header['complex_data'],
+            bps=header.bps, complex_data=header.complex_data,
             thread_id=header['thread_id'], nonsense_0=2000000000,
             nonsense_1=100, nonsense_2=10000000)
 
@@ -307,7 +309,7 @@ class TestVDIF:
         assert headerX.samples_per_frame == header.samples_per_frame
         assert headerX.nchan == header.nchan
         assert headerX.bps == header.bps
-        assert not headerX['complex_data']
+        assert not headerX.complex_data
         assert headerX.mutable is False
         assert headerX['nonsense_0'] == 2000000000
         assert headerX['nonsense_1'] == 100
@@ -343,7 +345,7 @@ class TestVDIF:
         assert vdif.VDIFPayload.fromdata(areal, header) == payload1
         # Also check that a circular decode-encode is self-consistent.
         assert vdif.VDIFPayload.fromdata(payload1.data, header) == payload1
-        header['complex_data'] = True
+        header.complex_data = True
         assert vdif.VDIFPayload.fromdata(acmplx, header) == payload2
         assert vdif.VDIFPayload.fromdata(payload2.data, header) == payload2
         # Also check for bps=4.
@@ -358,7 +360,7 @@ class TestVDIF:
                                             payload_nbytes=payload3.nbytes)
         assert vdif.VDIFPayload.fromdata(areal, header) == payload3
         assert vdif.VDIFPayload.fromdata(payload3.data, header) == payload3
-        header['complex_data'] = True
+        header.complex_data = True
         assert vdif.VDIFPayload.fromdata(acmplx, header) == payload4
         assert vdif.VDIFPayload.fromdata(payload4.data, header) == payload4
 
@@ -405,7 +407,7 @@ class TestVDIF:
         with pytest.raises(ValueError):
             vdif.VDIFPayload.fromdata(payload4.data, header)
         header5 = header.copy()
-        header5['complex_data'] = True
+        header5.complex_data = True
         payload5 = vdif.VDIFPayload.fromdata(payload4.data, header5)
         assert payload5 == payload4
         # Check shape for non-power-of-2 bps.  (Note: cannot yet decode.)
@@ -917,6 +919,39 @@ class TestVDIF:
             assert fh.tell() == 12
             assert np.all(out_nosqueeze.squeeze() == out_squeeze)
 
+    def test_pickle(self, tmpdir):
+        expected0 = np.array([-1, -1, 3, -1, 1, -1, 3, -1, 1, 3, -1, 1])
+        with vdif.open(SAMPLE_FILE, 'rs') as fh:
+            record = fh.read(6)
+            assert np.all(record[:, 0].astype(int) == expected0[:6])
+            fh.seek(6)
+            pickled = pickle.dumps(fh)
+            with pickle.loads(pickled) as fh2:
+                assert fh2.tell() == 6
+                record2 = fh2.read(6)
+                assert np.all(record2[:, 0].astype(int) == expected0[6:])
+
+            assert fh.tell() == 6
+            record = fh.read(6)
+            assert np.all(record[:, 0].astype(int) == expected0[6:])
+
+        with pickle.loads(pickled) as fh3:
+            assert fh3.tell() == 6
+            fh3.seek(-3, 1)
+            record3 = fh3.read(6)
+            assert np.all(record3[:, 0].astype(int) == expected0[3:9])
+
+        closed = pickle.dumps(fh)
+        with pickle.loads(closed) as fh4:
+            assert fh4.closed
+            with pytest.raises(ValueError):
+                fh4.read(1)
+
+        vdif_file = str(tmpdir.join('simple.vdif'))
+        with vdif.open(vdif_file, 'ws', header0=fh.header0) as fw:
+            with pytest.raises(TypeError):
+                pickle.dumps(fw)
+
     def test_stream_writer(self, tmpdir):
         vdif_file = str(tmpdir.join('simple.vdif'))
         # Try writing a very simple file, using edv=0.  With 16 samples per
@@ -1026,7 +1061,7 @@ class TestVDIF:
         test_file = str(tmpdir.join('test.vdif'))
         with vdif.open(test_file, 'ws', sample_rate=sample_rate,
                        samples_per_frame=samples_per_frame // 8, nthread=1,
-                       nchan=8, complex_data=header0['complex_data'],
+                       nchan=8, complex_data=header0.complex_data,
                        bps=header0.bps, edv=header0.edv,
                        station=header0.station, time=fh.start_time) as fw:
             fw.write(data)
@@ -1049,7 +1084,7 @@ class TestVDIF:
                            -data, -abs(data)]).transpose(1, 2, 0)
         with vdif.open(test_file, 'ws', sample_rate=sample_rate,
                        samples_per_frame=samples_per_frame // 4, nthread=8,
-                       nchan=4, complex_data=header0['complex_data'],
+                       nchan=4, complex_data=header0.complex_data,
                        bps=header0.bps, edv=header0.edv,
                        station=header0.station, time=fh.start_time) as fw:
             fw.write(data4x)
@@ -1201,12 +1236,11 @@ class TestVDIF:
             vdif.open(tmp_file, 's')
 
 
-def test_sequentialfile(tmpdir):
-    """Tests writing and reading of sequential files.
-
-    These tests focus on reading and writing with templates.
-    """
-
+@pytest.mark.parametrize('template,extra_args', [
+    ('f.{file_nr:03d}.vdif', {}),
+    ('{day}.{file_nr:03d}.vdif', {'day': 'f'})])
+def test_template(tmpdir, template, extra_args):
+    """Tests writing and reading of sequential files using a template."""
     # Use sample file as basis of a file sequence.
     with vdif.open(SAMPLE_FILE, 'rs') as fh:
         header = fh.header0.copy()
@@ -1215,14 +1249,13 @@ def test_sequentialfile(tmpdir):
     data = np.concatenate((data, data, data))
 
     # Create a file sequence using template.
-    template = str(tmpdir.join('f.{file_nr:03d}.vdif'))
-    files = sf.FileNameSequencer(template)
-    with vdif.open(files, 'ws', file_size=16*header.frame_nbytes,
-                   nthread=8, **header) as fw:
+    template = str(tmpdir.join(template))
+    with vdif.open(template, 'ws', file_size=16*header.frame_nbytes,
+                   nthread=8, **header, **extra_args) as fw:
         fw.write(data)
 
     # Read in file-sequence and check data consistency.
-    with vdif.open(files, 'rs') as fn:
+    with vdif.open(template, 'rs', **extra_args) as fn:
         assert len(fn.fh_raw.files) == 3
         assert fn.fh_raw.files[-1] == str(tmpdir.join('f.002.vdif'))
         assert fn.header0.time == header.time
@@ -1230,9 +1263,22 @@ def test_sequentialfile(tmpdir):
         assert np.all(data == fn.read())
 
     # Read in one file and check if everything makes sense.
-    with vdif.open(template.format(file_nr=2), 'rs') as fn:
+    with vdif.open(template.format(file_nr=2, **extra_args), 'rs') as fn:
         assert fn.header0.time - header.time - 2. * dtime < 1 * u.ns
         assert np.all(data[80000:] == fn.read())
+
+    if extra_args:
+        # Check that we get proper failure if we do not pass in arguments
+        # required to fill the template.
+        with pytest.raises(KeyError):
+            vdif.open(template, 'rs')
+        with pytest.raises(KeyError):
+            vdif.open(template, 'ws', file_size=16*header.frame_nbytes,
+                      nthread=8, **header)
+
+    # Check that extra arguments are still recognized as problematic.
+    with pytest.raises(TypeError):
+        vdif.open(template, 'rs', walk='silly', **extra_args)
 
 
 def test_vlbi_vdif():
@@ -1328,7 +1374,7 @@ def test_legacy_vdif(tmpdir):
     assert header.nchan == 2
     assert header.frame_nbytes == 507 * 8
     assert header.nbytes == 16
-    assert header['complex_data'] is False
+    assert header.complex_data is False
     assert header.bps == 2
     assert header['thread_id'] == 0
     assert header.station == 'AA'

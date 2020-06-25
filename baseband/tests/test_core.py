@@ -37,29 +37,29 @@ def test_open_wrong_args():
     # reader, but then fail on an incorrect sample rate.
     mark4_args = {'nchan': 8,
                   'ref_time': Time('2014-01-01')}
-    with pytest.raises(ValueError) as exc:  # wrong sample_rate
+    with pytest.raises(ValueError, match='inconsistent'):  # wrong sample_rate
         baseband_open(SAMPLE_M4, 'rs', sample_rate=31*u.MHz, **mark4_args)
-    assert "inconsistent" in str(exc.value)
 
-    with pytest.raises(TypeError) as exc:  # extraneous argument
+    with pytest.raises(TypeError, match='unexpected'):  # extraneous argument
         baseband_open(SAMPLE_M4, 'rs', life=42, **mark4_args)
-    assert "unexpected" in str(exc.value)
 
-    with pytest.raises(ValueError) as exc:  # wrong decade
+    with pytest.raises(ValueError, match='inconsistent'):  # wrong decade
         baseband_open(SAMPLE_VDIF, 'rs', decade=2000)
-    assert "inconsistent" in str(exc.value)
 
-    with pytest.raises(ValueError) as exc:  # wrong kday
+    with pytest.raises(ValueError, match='inconsistent'):  # wrong kday
         baseband_open(SAMPLE_VDIF, 'rs', kday=55000)
-    assert "inconsistent" in str(exc.value)
 
-    with pytest.raises(ValueError) as exc:  # ref_time too far off.
+    with pytest.raises(ValueError, match='inconsistent'):  # ref_time off.
         baseband_open(SAMPLE_VDIF, 'rs', ref_time=Time('J2000'))
-    assert "inconsistent" in str(exc.value)
 
-    with pytest.raises(ValueError) as exc:  # inconsistent nchan.
+    with pytest.raises(ValueError, match='inconsistent'):  # nchan wrong.
         baseband_open(SAMPLE_DADA, 'rs', nchan=8)
-    assert "inconsistent" in str(exc.value)
+
+    with pytest.raises(TypeError):  # decade not int
+        baseband_open(SAMPLE_M4, 'rs', decade='2010')
+
+    with pytest.raises(TypeError):  # kday not int
+        baseband_open(SAMPLE_M5B, 'rs', kday='unknown', nchan=8, bps=2)
 
 
 def test_open_sequence(tmpdir):
@@ -100,5 +100,30 @@ def test_open_sequence(tmpdir):
 
 def test_open_write_checks():
     # Cannot have multiple formats for writing.
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='cannot specify multiple'):
         baseband_open('a.a', 'wb', fmt=('dada', 'mark4'))
+
+
+def test_unsupported_file(tmpdir):
+    name = str(tmpdir.join('test.unsupported'))
+    with open(name, 'wb') as fw:
+        fw.write(b'abcdefghijklmnopqrstuvwxyz')
+
+    with pytest.raises(ValueError, match='could not be auto-determined'):
+        with pytest.warns(UserWarning, match='not.*formatted'):
+            baseband_open(name)
+
+
+def test_format_with_no_info(monkeypatch):
+    monkeypatch.delattr('baseband.vdif.info')
+    info = file_info(SAMPLE_VDIF)
+    assert info
+    assert info.format == 'vdif'
+    assert not hasattr(info, 'used_kwargs')
+
+    with baseband_open(SAMPLE_VDIF, format=('vdif', 'mark5b')) as fh:
+        assert fh.info.format == 'vdif'
+
+    with pytest.raises(ValueError, match='could not be auto-determined'):
+        with pytest.warns(UserWarning, match='not.*formatted'):
+            baseband_open(SAMPLE_M4, format=('vdif', 'mark5b'))

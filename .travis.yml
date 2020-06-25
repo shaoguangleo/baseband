@@ -47,9 +47,9 @@ env:
         - TOXPOSARGS=''
 
         # Also allow tests without tox, getting our packages using apt;
-        # Here, we still need pip to install baseband.  We use the Debian
-        # version since the one packaged on travis gives some problems.
-        - APT_DEPENDENCIES='python3-astropy python3-pytest-astropy python3-setuptools'
+        # Here, we need to include python3-attr, since the version on bionic
+        # is too old.
+        - APT_DEPENDENCIES='python3-astropy python3-setuptools python3-attr'
 
         # If there are matplotlib or other GUI tests, uncomment the following
         # line to use the X virtual framebuffer.
@@ -66,6 +66,7 @@ jobs:
           stage: Initial tests
           python: 3.8
           env: TOXENV=py38-test
+               TOXPOSARGS="--open-files"
 
         - name: Code style checks
           stage: Initial tests
@@ -88,7 +89,7 @@ jobs:
           python: 3.8
           env: TOXENV=py38-test-devdeps
 
-        # Also regularly try the big-endian s390x architecture, in the
+        # Also try the big-endian s390x architecture, in the
         # process checking that installing dependencies with apt works.
         - name: big-endian s390x architecture with apt
           stage: Comprehensive tests
@@ -96,9 +97,23 @@ jobs:
           language: c
           env: SETUP_METHOD='apt'
 
+        # Try on Windows
+        - os: windows
+          language: c
+          stage: Comprehensive tests
+          name: Python 3.7 on Windows
+          env: PYTHON_VERSION=3.7
+               TOXENV='py37-test'
+
+
 install:
 
-    # We now use the ci-helpers package to set up our testing environment.
+    # language: python is only available for Linux, so for other platforms
+    # we need to use ci-helpers to set up Python.
+    - if [[ $TRAVIS_OS_NAME == osx || $TRAVIS_OS_NAME == windows ]]; then
+        git clone git://github.com/astropy/ci-helpers.git;
+        source ci-helpers/travis/setup_conda.sh;
+      fi
 
     - if [[ $SETUP_METHOD == 'tox' ]]; then
         pip install tox;

@@ -1,4 +1,6 @@
 # Licensed under the GPLv3 - see LICENSE
+import pickle
+
 import pytest
 import numpy as np
 import astropy.units as u
@@ -57,6 +59,7 @@ class TestMark5B:
         with open(SAMPLE_FILE, 'rb') as fh:
             header = mark5b.Mark5BHeader.fromfile(fh, kday=56000)
         assert header.nbytes == 16
+        assert not header.complex_data
         assert header.kday == 56000.
         assert header.jday == 821
         mjd, frac = divmod(header.time.mjd, 1)
@@ -93,10 +96,13 @@ class TestMark5B:
         header6.time == header.time
         header6.payload_nbytes = 10000
         header6.frame_nbytes = 10016
-        with pytest.raises(ValueError):
+        header6.complex_data = False
+        with pytest.raises(ValueError, match="'payload_nbytes'.*set to 10000"):
             header6.payload_nbytes = 9999
         with pytest.raises(ValueError):
             header6.frame_nbytes = 20
+        with pytest.raises(ValueError):
+            header6.complex_data = True
         # Regression tests
         header7 = header.copy()
         assert header7 == header  # This checks header.words
@@ -308,6 +314,19 @@ class TestMark5B:
                 assert getattr(info, key) == value
 
         assert info() == stream_expected
+
+    def test_binary_file_info_invalid_data(self):
+        with mark5b.open(SAMPLE_FILE, 'rb', kday='56000') as fh:
+            info = fh.info
+            assert info.format == 'mark5b'
+            assert set(info.missing) == {'nchan'}
+            assert 'header0' in info.errors
+
+        with mark5b.open(SAMPLE_FILE, 'rb', ref_time='56000', nchan=8) as fh:
+            info = fh.info
+            assert info.format == 'mark5b'
+            assert not info.missing
+            assert 'header0' in info.errors
 
     def test_frame(self, tmpdir):
         with mark5b.open(SAMPLE_FILE, 'rb', kday=56000, nchan=8, bps=2) as fh:
@@ -754,6 +773,29 @@ class TestMark5B:
         with mark5b.open(SAMPLE_FILE, 'rs', sample_rate=32*u.MHz,
                          ref_time=Time('2015-01-01'), nchan=8, bps=2) as fh:
             assert fh.info.readable
+
+    def test_pickle(self):
+        # Only simple tests here; more complete ones in vdif.
+        with mark5b.open(SAMPLE_FILE, 'rs', sample_rate=32*u.MHz,
+                         ref_time=Time('2015-01-01'), nchan=8, bps=2) as fh:
+            fh.seek(6)
+            pickled = pickle.dumps(fh)
+            fh.read(3)
+            with pickle.loads(pickled) as fh2:
+                assert fh2.tell() == 6
+                fh2.read(10)
+
+            assert fh.tell() == 9
+
+        with pickle.loads(pickled) as fh3:
+            assert fh3.tell() == 6
+            fh3.read(1)
+
+        closed = pickle.dumps(fh)
+        with pickle.loads(closed) as fh4:
+            assert fh4.closed
+            with pytest.raises(ValueError):
+                fh4.read(1)
 
     def test_sequentialfile(self, tmpdir):
         """Tests writing and reading of sequential files.

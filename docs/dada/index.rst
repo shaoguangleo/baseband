@@ -70,6 +70,8 @@ writing is in units of samples, and provides access to header information::
 
 To set up a file for writing as a stream is possible as well::
 
+.. doctest-requires:: posix
+
     >>> from astropy.time import Time
     >>> fw = dada.open('{utc_start}.{obs_offset:016d}.000000.dada', 'ws',
     ...                sample_rate=16*u.MHz, samples_per_frame=5000,
@@ -92,7 +94,7 @@ define multiple files.  DADA data are typically stored in sequences of files.
 If one passes a time-ordered list or tuple of filenames to
 `~baseband.dada.open`, it uses |sequentialfile.open| to access the sequence.
 If, as above, one passes a template string, `~baseband.dada.open` uses
-`~baseband.dada.base.DADAFileNameSequencer` to create and use a filename
+`~baseband.dada.DADAFileNameSequencer` to create and use a filename
 sequencer.  (See API links for further details.)
 
 .. |sequentialfile.open| replace:: `sequentialfile.open <baseband.helpers.sequentialfile.open>`

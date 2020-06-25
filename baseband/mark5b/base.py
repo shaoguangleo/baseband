@@ -3,9 +3,10 @@ import numpy as np
 import astropy.units as u
 from astropy.utils import lazyproperty
 
-from ..vlbi_base.base import (VLBIFileBase, VLBIFileReaderBase, VLBIStreamBase,
-                              VLBIStreamReaderBase, VLBIStreamWriterBase,
-                              make_opener)
+from ..vlbi_base.base import (
+    VLBIFileBase, VLBIFileReaderBase,
+    VLBIStreamBase, VLBIStreamReaderBase, VLBIStreamWriterBase,
+    FileOpener, FileInfo)
 from .header import Mark5BHeader
 from .payload import Mark5BPayload
 from .frame import Mark5BFrame
@@ -14,7 +15,7 @@ from .file_info import Mark5BFileReaderInfo
 
 __all__ = ['Mark5BFileReader', 'Mark5BFileWriter',
            'Mark5BStreamBase', 'Mark5BStreamReader', 'Mark5BStreamWriter',
-           'open']
+           'open', 'info']
 
 
 class Mark5BFileReader(VLBIFileReaderBase):
@@ -166,12 +167,14 @@ class Mark5BFileWriter(VLBIFileBase):
 class Mark5BStreamBase(VLBIStreamBase):
     """Base for Mark 5B streams."""
 
+    _sample_shape_maker = Mark5BPayload._sample_shape_maker
+
     def __init__(self, fh_raw, header0, sample_rate=None, nchan=1,
                  bps=2, squeeze=True, subset=(), fill_value=0., verify=True):
         super().__init__(
             fh_raw, header0=header0, sample_rate=sample_rate,
             samples_per_frame=header0.payload_nbytes * 8 // bps // nchan,
-            unsliced_shape=(nchan,), bps=bps, complex_data=False,
+            unsliced_shape=(nchan,), bps=bps,
             squeeze=squeeze, subset=subset, fill_value=fill_value,
             verify=verify)
 
@@ -244,8 +247,6 @@ class Mark5BStreamReader(Mark5BStreamBase, VLBIStreamReaderBase):
         of gaps with zeros.
     """
 
-    _sample_shape_maker = Mark5BPayload._sample_shape_maker
-
     def __init__(self, fh_raw, sample_rate=None, kday=None, ref_time=None,
                  nchan=None, bps=2, squeeze=True, subset=(), fill_value=0.,
                  verify='fix'):
@@ -290,8 +291,7 @@ class Mark5BStreamWriter(Mark5BStreamBase, VLBIStreamWriterBase):
     fh_raw : filehandle
         For writing filled sets of frames to storage.
     header0 : `~baseband.mark5b.Mark5BHeader`
-        Header for the first frame, holding time information, etc.  Can instead
-        give keyword arguments to construct a header (see ``**kwargs``).
+        Header for the first frame, holding time information, etc.
     sample_rate : `~astropy.units.Quantity`
         Number of complete samples per second, i.e. the rate at which each
         channel is sampled.  Needed to calculate header timestamps.
@@ -302,39 +302,36 @@ class Mark5BStreamWriter(Mark5BStreamBase, VLBIStreamWriterBase):
     squeeze : bool, optional
         If `True` (default), `write` accepts squeezed arrays as input, and
         adds any dimensions of length unity.
-    **kwargs
-        If no header is given, an attempt is made to construct one from these.
-        For a standard header, the following suffices.
-
-    --- Header kwargs : (see :meth:`~baseband.mark5b.Mark5BHeader.fromvalues`)
-
-    time : `~astropy.time.Time`
-        Start time of the file.  Sets bcd-encoded unit day, hour, minute,
-        second, and fraction, as well as the frame number, in the header.
     """
 
     _sample_shape_maker = Mark5BPayload._sample_shape_maker
 
     def __init__(self, fh_raw, header0=None, sample_rate=None, nchan=1, bps=2,
-                 squeeze=True, **kwargs):
-        samples_per_frame = Mark5BHeader.payload_nbytes * 8 // bps // nchan
-        if header0 is None:
-            if 'time' in kwargs:
-                kwargs['frame_rate'] = sample_rate / samples_per_frame
-            header0 = Mark5BHeader.fromvalues(**kwargs)
-
+                 squeeze=True):
         fh_raw = Mark5BFileWriter(fh_raw)
         super().__init__(
             fh_raw, header0, sample_rate=sample_rate, nchan=nchan,
             bps=bps, squeeze=squeeze)
         # Initial frame, reused for every other one.
-        payload = Mark5BPayload(np.zeros((2500,), Mark5BPayload._dtype_word),
-                                nchan=self._unsliced_shape.nchan,
-                                bps=self.bps)
-        self._frame = Mark5BFrame(header0.copy(), payload)
+        self._frame = Mark5BFrame.fromdata(
+            np.zeros((self.samples_per_frame,) + self._unsliced_shape),
+            header0.copy(), bps=bps)
 
 
-open = make_opener('Mark5B', globals(), doc="""
+class Mark5BFileOpener(FileOpener):
+    def get_header0(self, kwargs):
+        if ('time' in kwargs and 'sample_rate' in kwargs
+                and 'frame_rate' not in kwargs):
+            bps = kwargs.get('bps', 2)
+            nchan = kwargs.get('nchan', 1)
+            samples_per_frame = Mark5BHeader.payload_nbytes * 8 // bps // nchan
+            kwargs['frame_rate'] = kwargs['sample_rate'] / samples_per_frame
+        header0 = super().get_header0(kwargs)
+        kwargs.pop('frame_rate', None)
+        return header0
+
+
+open = Mark5BFileOpener.create(globals(), doc="""
 --- For reading a stream : (see `~baseband.mark5b.base.Mark5BStreamReader`)
 
 sample_rate : `~astropy.units.Quantity`, optional
@@ -386,8 +383,14 @@ file_size : int or None, optional
     If `None` (default), the file size is unlimited, and only the first
     file will be written to.
 **kwargs
-    If no header is given, an attempt is made to construct one with any further
-    keyword arguments.  See :class:`~baseband.mark5b.base.Mark5BStreamWriter`.
+    If no header is given, an attempt is made to construct one from these.
+    For a standard header, the following suffices.
+
+--- Header kwargs : (see :meth:`~baseband.mark5b.Mark5BHeader.fromvalues`)
+
+time : `~astropy.time.Time`
+    Start time of the file.  Sets bcd-encoded unit day, hour, minute,
+    second, and fraction, as well as the frame number, in the header.
 
 Returns
 -------
@@ -406,3 +409,6 @@ written to.  One may also pass in a `~baseband.helpers.sequentialfile` object
 (opened in 'rb' mode for reading or 'w+b' for writing), though for typical use
 cases it is practically identical to passing in a list or template.
 """)
+
+
+info = FileInfo.create(globals())

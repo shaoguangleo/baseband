@@ -1,11 +1,13 @@
 # Licensed under the GPLv3 - see LICENSE
 import numpy as np
-from astropy.utils import lazyproperty, deprecated
+from astropy.utils import lazyproperty
 import astropy.units as u
 
-from ..vlbi_base.base import (make_opener, VLBIFileBase, VLBIFileReaderBase,
-                              VLBIStreamBase, VLBIStreamReaderBase,
-                              VLBIStreamWriterBase, HeaderNotFoundError)
+from ..vlbi_base.base import (
+    VLBIFileBase, VLBIFileReaderBase,
+    VLBIStreamBase, VLBIStreamReaderBase,
+    VLBIStreamWriterBase, HeaderNotFoundError,
+    FileOpener, FileInfo)
 from .header import Mark4Header
 from .payload import Mark4Payload
 from .frame import Mark4Frame
@@ -14,7 +16,7 @@ from .file_info import Mark4FileReaderInfo
 
 __all__ = ['Mark4FileReader', 'Mark4FileWriter',
            'Mark4StreamBase', 'Mark4StreamReader', 'Mark4StreamWriter',
-           'open']
+           'open', 'info']
 
 # Look-up table for the number of bits in a byte.
 nbits = ((np.arange(256)[:, np.newaxis] >> np.arange(8) & 1)
@@ -25,7 +27,7 @@ class Mark4FileReader(VLBIFileReaderBase):
     """Simple reader for Mark 4 files.
 
     Wraps a binary filehandle, providing methods to help interpret the data,
-    such as `locate_frame`, `read_frame` and `get_frame_rate`.
+    such as `locate_frames`, `read_frame` and `get_frame_rate`.
 
     Parameters
     ----------
@@ -163,9 +165,9 @@ class Mark4FileReader(VLBIFileReaderBase):
     def determine_ntrack(self, maximum=None):
         """Determines the number of tracks, by seeking the next frame.
 
-        Uses `locate_frame` to look for the first occurrence of a frame from
+        Uses `locate_frames` to look for the first occurrence of a frame from
         the current position for all supported ``ntrack`` values.  Returns the
-        first ``ntrack`` for which `locate_frame` is successful, setting
+        first ``ntrack`` for which `locate_frames` is successful, setting
         the file's ``ntrack`` property appropriately, and leaving the
         file pointer at the start of the frame.
 
@@ -190,39 +192,16 @@ class Mark4FileReader(VLBIFileReaderBase):
         trials = 16, 32, 64
         for ntrack in trials:
             self.ntrack = ntrack
-            try:
-                self.find_header(maximum=maximum)
+            with self.temporary_offset():
+                offsets = self.locate_frames(maximum=maximum)
+            if offsets:
+                self.seek(offsets[0])
                 return ntrack
-            except Exception:
-                pass
 
         self.ntrack = old_ntrack
         raise HeaderNotFoundError("cannot determine ntrack automatically. "
                                   "(tried {}). Try passing in an "
                                   "explicit value.".format(trials))
-
-    @deprecated(since='3.1', alternative='locate_frames or find_header')
-    def locate_frame(self, *args, **kwargs):
-        """Use a pattern to locate the frame nearest the current position.
-
-        Like ``locate_frames``, but selects the closest frame and leaves
-        the file pointer at its position.
-
-        Returns
-        -------
-        location : int
-            The location of the file pointer.
-
-        Raises
-        ------
-        ~baseband.vlbi_base.base.HeaderNotFoundError
-            If no frame was found.
-        """
-        locations = self.locate_frames(*args, **kwargs)
-        if not locations:
-            raise HeaderNotFoundError('could not locate a a nearby frame.')
-
-        return self.seek(locations[0])
 
 
 class Mark4FileWriter(VLBIFileBase):
@@ -254,18 +233,7 @@ class Mark4FileWriter(VLBIFileBase):
 class Mark4StreamBase(VLBIStreamBase):
     """Base for Mark 4 streams."""
 
-    def __init__(self, fh_raw, header0, sample_rate=None, squeeze=True,
-                 subset=(), fill_value=0., verify=True):
-        super().__init__(
-            fh_raw, header0=header0, sample_rate=sample_rate,
-            samples_per_frame=header0.samples_per_frame,
-            unsliced_shape=(header0.nchan,),
-            bps=header0.bps, complex_data=False, squeeze=squeeze,
-            subset=subset, fill_value=fill_value, verify=verify)
-
-    def _set_time(self, header, time):
-        # Use update to ensure CRC is updated as well.
-        header.update(time=time)
+    _sample_shape_maker = Mark4Payload._sample_shape_maker
 
 
 class Mark4StreamReader(Mark4StreamBase, VLBIStreamReaderBase):
@@ -305,8 +273,6 @@ class Mark4StreamReader(Mark4StreamBase, VLBIStreamReaderBase):
         Default: 'fix', which implies basic verification and replacement
         of gaps with zeros.
     """
-
-    _sample_shape_maker = Mark4Payload._sample_shape_maker
 
     def __init__(self, fh_raw, sample_rate=None, ntrack=None, decade=None,
                  ref_time=None, squeeze=True, subset=(), fill_value=0.,
@@ -359,51 +325,26 @@ class Mark4StreamWriter(Mark4StreamBase, VLBIStreamWriterBase):
     raw : filehandle
         Which will write filled sets of frames to storage.
     header0 : `~baseband.mark4.Mark4Header`
-        Header for the first frame, holding time information, etc.  Can instead
-        give keyword arguments to construct a header (see ``**kwargs``).
+        Header for the first frame, holding time information, etc.
     sample_rate : `~astropy.units.Quantity`
         Number of complete samples per second, i.e. the rate at which each
         channel is sampled.  Needed to calculate header timestamps.
     squeeze : bool, optional
         If `True` (default), `write` accepts squeezed arrays as input, and
         adds any dimensions of length unity.
-    **kwargs
-        If no header is given, an attempt is made to construct one from these.
-        For a standard header, this would include the following.
-
-    --- Header keywords : (see :meth:`~baseband.mark4.Mark4Header.fromvalues`)
-
-    time : `~astropy.time.Time`
-        Start time of the file.  Sets bcd-encoded unit year, day, hour, minute,
-        second in the header.
-    ntrack : int
-        Number of Mark 4 bitstreams (equal to number of channels times
-        ``fanout`` times ``bps``)
-    bps : int
-        Bits per elementary sample.
-    fanout : int
-        Number of tracks over which a given channel is spread out.
     """
 
-    _sample_shape_maker = Mark4Payload._sample_shape_maker
-
-    def __init__(self, fh_raw, header0=None, sample_rate=None, squeeze=True,
-                 **kwargs):
-        if header0 is None:
-            header0 = Mark4Header.fromvalues(**kwargs)
+    def __init__(self, fh_raw, header0=None, sample_rate=None, squeeze=True):
+        fh_raw = Mark4FileWriter(fh_raw)
         super().__init__(fh_raw=fh_raw, header0=header0,
                          sample_rate=sample_rate, squeeze=squeeze)
-        # Set up initial payload with right shape.
-        samples_per_payload = (
-            header0.samples_per_frame * header0.payload_nbytes
-            // header0.frame_nbytes)
-        payload = Mark4Payload.fromdata(
-            np.zeros((samples_per_payload, header0.nchan), np.float32),
-            header0)
-        self._frame = Mark4Frame(header0.copy(), payload)
+        # Initial frame, reused for every other one.
+        self._frame = Mark4Frame.fromdata(
+            np.zeros((self.samples_per_frame,) + self._unsliced_shape),
+            header0.copy())
 
 
-open = make_opener('Mark4', globals(), doc="""
+open = FileOpener.create(globals(), doc="""
 --- For reading a stream : (see `~baseband.mark4.base.Mark4StreamReader`)
 
 sample_rate : `~astropy.units.Quantity`, optional
@@ -449,9 +390,21 @@ file_size : int or None, optional
     If `None` (default), the file size is unlimited, and only the first
     file will be written to.
 **kwargs
-    If the header is not given, an attempt will be made to construct one
-    with any further keyword arguments.  See
-    :class:`~baseband.mark4.base.Mark4StreamWriter`.
+    If no header is given, an attempt is made to construct one from these.
+    For a standard header, this would include the following.
+
+--- Header keywords : (see :meth:`~baseband.mark4.Mark4Header.fromvalues`)
+
+time : `~astropy.time.Time`
+    Start time of the file.  Sets bcd-encoded unit year, day, hour, minute,
+    second in the header.
+ntrack : int
+    Number of Mark 4 bitstreams (equal to number of channels times
+    ``fanout`` times ``bps``)
+bps : int
+    Bits per elementary sample.
+fanout : int
+    Number of tracks over which a given channel is spread out.
 
 Returns
 -------
@@ -471,3 +424,6 @@ written to.  One may also pass in a `~baseband.helpers.sequentialfile` object
 (opened in 'rb' mode for reading or 'w+b' for writing), though for typical use
 cases it is practically identical to passing in a list or template.
 """)
+
+
+info = FileInfo.create(globals())

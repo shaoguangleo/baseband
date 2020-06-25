@@ -104,7 +104,6 @@ class Mark4FileReaderInfo(VLBIFileReaderInfo):
                   + VLBIFileReaderInfo.attr_names[-4:])
     """Attributes that the container provides."""
 
-    _header0_attrs = ('bps', 'samples_per_frame')
     _parent_attrs = ('ntrack', 'decade', 'ref_time')
 
     @info_item
@@ -122,8 +121,7 @@ class Mark4FileReaderInfo(VLBIFileReaderInfo):
     def offset0(self):
         """Offset in bytes to the location of the first header."""
         with self._parent.temporary_offset(0) as fh:
-            fh.find_header()
-            return fh.tell()
+            return fh.locate_frames()[0]
 
     @info_item(needs='offset0')
     def header0(self):
@@ -152,14 +150,11 @@ class Mark4FileReaderInfo(VLBIFileReaderInfo):
                 .format(number_of_frames))
             return None
 
-    complex_data = False
-
-    @info_item(needs='header0')
-    def sample_shape(self):
-        """Dimensions of each complete sample."""
-        return (self.header0.nchan,)
-
     # Override just to replace what it "needs".
+    @info_item(needs='offset0')
+    def format(self):
+        return 'mark4'
+
     @info_item(needs=('header0', 'time_info'))
     def start_time(self):
         """Time of the first sample."""

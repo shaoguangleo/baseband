@@ -5,9 +5,10 @@ import astropy.units as u
 from astropy.utils import lazyproperty
 
 from ..helpers import sequentialfile as sf
-from ..vlbi_base.base import (make_opener, VLBIFileBase, VLBIFileReaderBase,
-                              VLBIStreamBase, VLBIStreamReaderBase,
-                              VLBIStreamWriterBase)
+from ..vlbi_base.base import (
+    VLBIFileBase, VLBIFileReaderBase,
+    VLBIStreamBase, VLBIStreamReaderBase, VLBIStreamWriterBase,
+    FileOpener, FileInfo)
 from .header import GUPPIHeader
 from .payload import GUPPIPayload
 from .frame import GUPPIFrame
@@ -15,7 +16,8 @@ from .file_info import GUPPIFileReaderInfo
 
 
 __all__ = ['GUPPIFileNameSequencer', 'GUPPIFileReader', 'GUPPIFileWriter',
-           'GUPPIStreamBase', 'GUPPIStreamReader', 'GUPPIStreamWriter', 'open']
+           'GUPPIStreamBase', 'GUPPIStreamReader', 'GUPPIStreamWriter',
+           'open', 'info']
 
 
 class GUPPIFileNameSequencer(sf.FileNameSequencer):
@@ -42,7 +44,7 @@ class GUPPIFileNameSequencer(sf.FileNameSequencer):
     --------
 
     >>> from baseband import guppi
-    >>> gfs = guppi.base.GUPPIFileNameSequencer(
+    >>> gfs = guppi.GUPPIFileNameSequencer(
     ...     '{date}_{file_nr:03d}.raw', {'DATE': "2018-01-01"})
     >>> gfs[10]
     '2018-01-01_010.raw'
@@ -50,7 +52,7 @@ class GUPPIFileNameSequencer(sf.FileNameSequencer):
     >>> with open(SAMPLE_PUPPI, 'rb') as fh:
     ...     header = guppi.GUPPIHeader.fromfile(fh)
     >>> template = 'puppi_{stt_imjd}_{src_name}_{scannum}.{file_nr:04d}.raw'
-    >>> gfs = guppi.base.GUPPIFileNameSequencer(template, header)
+    >>> gfs = guppi.GUPPIFileNameSequencer(template, header)
     >>> gfs[0]
     'puppi_58132_J1810+1744_2176.0000.raw'
     >>> gfs[10]
@@ -197,31 +199,22 @@ class GUPPIStreamBase(VLBIStreamBase):
 
     _sample_shape_maker = GUPPIPayload._sample_shape_maker
 
-    def __init__(self, fh_raw, header0, squeeze=True, subset=(), verify=True):
+    # Overriding instead of passing on a different samples_per_frame
+    # in __init__ so the docstring indicates the exclusion of the overlap.
+    @property
+    def samples_per_frame(self):
+        """"Number of complete samples per frame, excluding overlap."""
+        return self.header0.samples_per_frame - self.header0.overlap
 
+    @lazyproperty
+    def _packets_per_frame(self):
         # GUPPI headers report their offsets using 'PKTIDX', the number of
         # unique UDP data packets (i.e. excluding overlap) written since the
         # start of observation.  'PKTSIZE' is the packet size in bytes.  Here
         # we calculate the packets per frame.
-        self._packets_per_frame = (
-            (header0.payload_nbytes - header0.overlap * header0._bpcs // 8)
-            // header0['PKTSIZE'])
-
-        # Set samples per frame to unique ones, excluding overlap.
-        samples_per_frame = header0.samples_per_frame - header0.overlap
-
-        super().__init__(
-            fh_raw=fh_raw, header0=header0, sample_rate=header0.sample_rate,
-            samples_per_frame=samples_per_frame,
-            unsliced_shape=header0.sample_shape, bps=header0.bps,
-            complex_data=header0.complex_data, squeeze=squeeze, subset=subset,
-            fill_value=0., verify=verify)
-
-    # Overriding so the docstring indicates the exclusion of the overlap.
-    samples_per_frame = property(VLBIStreamBase.samples_per_frame.fget,
-                                 VLBIStreamBase.samples_per_frame.fset,
-                                 doc=("Number of complete samples per frame, "
-                                      "excluding overlap."))
+        return ((self.header0.payload_nbytes
+                 - self.header0.overlap * self.header0._bpcs // 8)
+                // self.header0['PKTSIZE'])
 
     def _get_index(self, header):
         # Override to avoid calculating index from time.
@@ -307,7 +300,20 @@ class GUPPIStreamWriter(GUPPIStreamBase, VLBIStreamWriterBase):
         del self._frame
 
 
-opener = make_opener('GUPPI', globals(), doc="""
+class GUPPIFileOpener(FileOpener):
+    FileNameSequencer = GUPPIFileNameSequencer
+    non_header_keys = FileOpener.non_header_keys | {'frames_per_file'}
+
+    def get_fh(self, name, mode, kwargs):
+        if mode == 'ws' and self.is_sequence(name):
+            kwargs.setdefault('file_size',
+                              kwargs.pop('frames_per_file', 128)
+                              * kwargs['header0'].frame_nbytes)
+
+        return super().get_fh(name, mode, kwargs)
+
+
+open = GUPPIFileOpener.create(globals(), doc="""
 --- For reading a stream : (see `~baseband.guppi.base.GUPPIStreamReader`)
 
 squeeze : bool, optional
@@ -332,8 +338,8 @@ frames_per_file : int, optional
     When writing to a sequence of files, sets the number of frames
     within each file.  Default: 128.
 **kwargs
-    If the header is not given, an attempt will be made to construct one
-    with any further keyword arguments.
+    If no header is given, an attempt is made to construct one from these.
+    For a standard header, this would include the following.
 
 --- Header keywords : (see :meth:`~baseband.guppi.GUPPIHeader.fromvalues`)
 
@@ -370,7 +376,7 @@ Notes
 -----
 For streams, one can also pass to ``name`` a list of files, or a template
 string that can be formatted using 'stt_imjd', 'src_name', and other header
-keywords (by `~baseband.guppi.base.GUPPIFileNameSequencer`).
+keywords (by `~baseband.guppi.GUPPIFileNameSequencer`).
 
 For writing, one can mimic, for example, what is done at Arecibo by using
 the template 'puppi_{stt_imjd}_{src_name}_{scannum}.{file_nr:04d}.raw'.  GUPPI
@@ -391,51 +397,4 @@ cases it is practically identical to passing in a list or template.
 """)
 
 
-# Need to wrap the opener to be able to deal with file lists or templates.
-def open(name, mode='rs', **kwargs):
-    # Extract needed kwargs (and keep some from being passed to opener).
-    header0 = kwargs.get('header0', None)
-    frames_per_file = kwargs.pop('frames_per_file', 128)
-
-    # Check if ``name`` is a template or sequence.
-    is_template = isinstance(name, str) and ('{' in name and '}' in name)
-    is_sequence = isinstance(name, (tuple, list, sf.FileNameSequencer))
-
-    # For stream writing, header0 is needed; for reading, it is needed for
-    # initializing a template only.
-    if 'b' not in mode:
-        # Initialize header0 if it doesn't yet exist.
-        if header0 is None:
-            if 'w' in mode:
-                # Store squeeze.
-                passed_kwargs = ({'squeeze': kwargs.pop('squeeze')}
-                                 if 'squeeze' in kwargs.keys() else {})
-                # Make header0.
-                header0 = GUPPIHeader.fromvalues(**kwargs)
-                # Pass squeeze and header0 on to stream writer.
-                kwargs = passed_kwargs
-                kwargs['header0'] = header0
-
-            elif is_template:
-                # Store parameters to pass.
-                passed_kwargs = {key: kwargs.pop(key) for key in
-                                 ('squeeze', 'subset', 'verify')
-                                 if key in kwargs}
-                header0 = {key.upper(): value for key, value in kwargs.items()}
-                kwargs = passed_kwargs
-
-        if is_template:
-            name = GUPPIFileNameSequencer(name, header0)
-
-    # If writing with a template or sequence, pass ``file_size``.
-    if 'w' in mode and (is_template or is_sequence):
-        if 'b' in mode:
-            raise ValueError("does not support opening a file sequence in "
-                             "'wb' mode.  Try passing in a SequentialFile "
-                             "object instead.")
-        kwargs['file_size'] = frames_per_file * header0.frame_nbytes
-
-    return opener(name, mode, **kwargs)
-
-
-open.__doc__ = opener.__doc__
+info = FileInfo.create(globals())
