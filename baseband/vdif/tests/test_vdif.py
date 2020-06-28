@@ -6,8 +6,8 @@ import numpy as np
 from astropy.time import Time
 import astropy.units as u
 
-from ... import vdif, vlbi_base
-from ...vlbi_base.base import HeaderNotFoundError
+from ... import vdif, base
+from ...base.base import HeaderNotFoundError
 from ...data import (SAMPLE_VDIF as SAMPLE_FILE, SAMPLE_VLBI_VDIF as
                      SAMPLE_VLBI, SAMPLE_MWA_VDIF as SAMPLE_MWA,
                      SAMPLE_AROCHIME_VDIF as SAMPLE_AROCHIME,
@@ -58,6 +58,7 @@ class TestVDIF:
         assert header.sample_rate == 32*u.MHz
         assert header.samples_per_frame == 20000
         assert header.nchan == 1
+        assert header.sample_shape == (1,)
         assert header.bps == 2
         assert not header.complex_data
         assert not header['complex_data']
@@ -212,12 +213,12 @@ class TestVDIF:
             header11.nchan = 2
         header11.bps = 8
         assert header11.bps == 8
-        header11.nchan = 2
+        header11.sample_shape = (2,)
         assert header11.nchan == 2
 
         header12 = header.copy()
         header12.nchan = 2
-        assert header12.nchan == 2
+        assert header12.sample_shape == (2,)
         with pytest.raises(ValueError):
             header12.bps = 5
 
@@ -263,7 +264,7 @@ class TestVDIF:
         class VDIFHeaderX(vdif.header.VDIFSampleRateHeader):
             _edv = 0x58
             _header_parser = (vdif.header.VDIFSampleRateHeader._header_parser
-                              + vlbi_base.header.HeaderParser(
+                              | base.header.HeaderParser(
                                   (('nonsense_0', (6, 0, 32, 0x0)),
                                    ('nonsense_1', (7, 0, 8, None)),
                                    ('nonsense_2', (7, 8, 24, 0x1)))))
@@ -307,7 +308,7 @@ class TestVDIF:
         assert headerX['thread_id'] == header['thread_id']
         assert headerX.sample_rate == header.sample_rate
         assert headerX.samples_per_frame == header.samples_per_frame
-        assert headerX.nchan == header.nchan
+        assert headerX.sample_shape == header.sample_shape
         assert headerX.bps == header.bps
         assert not headerX.complex_data
         assert headerX.mutable is False
@@ -317,7 +318,7 @@ class TestVDIF:
 
     def test_decoding(self, tmpdir):
         """Check that look-up levels are consistent with mark5access."""
-        o2h = vlbi_base.encoding.OPTIMAL_2BIT_HIGH
+        o2h = base.encoding.OPTIMAL_2BIT_HIGH
         assert np.all(vdif.payload.lut1bit[0] == -1.)
         assert np.all(vdif.payload.lut1bit[0xff] == 1.)
         assert np.all(vdif.payload.lut1bit.astype(int)
@@ -396,8 +397,7 @@ class TestVDIF:
             # Too few data.
             vdif.VDIFPayload.fromdata(payload[:100], header)
         # check if it works with complex data
-        payload4 = vdif.VDIFPayload(payload.words, nchan=1, bps=2,
-                                    complex_data=True)
+        payload4 = vdif.VDIFPayload(payload.words, bps=2, complex_data=True)
         assert payload4.complex_data is True
         assert payload4.nbytes == 5000
         assert payload4.shape == (10000, 1)
@@ -411,17 +411,13 @@ class TestVDIF:
         payload5 = vdif.VDIFPayload.fromdata(payload4.data, header5)
         assert payload5 == payload4
         # Check shape for non-power-of-2 bps.  (Note: cannot yet decode.)
-        payload6 = vdif.VDIFPayload(payload.words, nchan=1, bps=7,
-                                    complex_data=False)
+        payload6 = vdif.VDIFPayload(payload.words, bps=7, complex_data=False)
         assert payload6.shape == (1250 * 4, 1)
-        payload7 = vdif.VDIFPayload(payload.words, nchan=1, bps=7,
-                                    complex_data=True)
+        payload7 = vdif.VDIFPayload(payload.words, bps=7, complex_data=True)
         assert payload7.shape == (1250 * 2, 1)
-        payload8 = vdif.VDIFPayload(payload.words, nchan=1, bps=11,
-                                    complex_data=False)
+        payload8 = vdif.VDIFPayload(payload.words, bps=11, complex_data=False)
         assert payload8.shape == (1250 * 2, 1)
-        payload9 = vdif.VDIFPayload(payload.words, nchan=1, bps=11,
-                                    complex_data=True)
+        payload9 = vdif.VDIFPayload(payload.words, bps=11, complex_data=True)
         assert payload9.shape == (1250 * 1, 1)
 
     @pytest.mark.parametrize('item', (2, (), -1, slice(1, 3),
@@ -517,11 +513,12 @@ class TestVDIF:
         assert len(frameset.frames) == 8
         assert len(frameset) == len(frameset.frames[0])
         assert frameset.samples_per_frame == 20000
-        assert frameset.nchan == 1
+        assert frameset.sample_shape == (8, 1)
         assert frameset.shape == (20000, 8, 1)
         assert frameset.size == 160000
         assert frameset.ndim == 3
         assert frameset.nbytes == 8 * frameset.frames[0].nbytes
+        assert frameset.nchan == 1
         assert 'edv' in frameset
         assert 'edv' in frameset.keys()
         assert frameset['edv'] == 3
@@ -1372,6 +1369,7 @@ def test_legacy_vdif(tmpdir):
     assert header['frame_nr'] == 0
     assert header['vdif_version'] == 1
     assert header.nchan == 2
+    assert header.sample_shape == (2,)
     assert header.frame_nbytes == 507 * 8
     assert header.nbytes == 16
     assert header.complex_data is False
@@ -1417,6 +1415,7 @@ class TestVDIFBPS1:
         assert header0.nchan == 16
         assert header0.bps == 1
         assert header0.samples_per_frame == 4000
+        assert header0.sample_shape == (16,)
 
     def test_stream(self):
         with vdif.open(SAMPLE_BPS1, 'rs', sample_rate=8*u.MHz) as fh:

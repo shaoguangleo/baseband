@@ -11,6 +11,34 @@ New Features
   packages to make new readers accessible to baseband by defining an entry
   point in their ``setup.cfg``. [#418]
 
+API Changes
+-----------
+
+The internals of baseband have undergone fairly substantial refactoring to
+make the classes more coherent. This should not affect users directly, but may
+affect those that have built their own readers.
+
+- Following python 3.9, ``HeaderParser`` instances (which are subclasses of
+  ``dict``), can now be merged together using the ``|`` operator. For
+  backward compatibility, using the ``+`` operator will remain supported.
+  [#424]
+
+- All ``StreamWriters`` now require an explicit ``header0`` to be passed
+  in (as was already the case for DADA and GUPPI). Creation of a ``header0``
+  from keyword arguments is now done inside the opener. [#417]
+
+- The ``vlbi_base`` module has been deprecated in favour of ``base``,
+  and ``VLBI`` prefixes of classes have been removed where these were
+  not specific to actual VLBI data, leaving only ``VLBIHeaderBase``,
+  ``VLBIFileReaderBase``, and ``VLBIStreamReaderBase``.  [#425]
+
+- Support for memory mapping of payloads has been moved into the base
+  ``PayloadBase`` and ``FrameBase`` classes and thus is available for all
+  formats. [#427]
+
+- Payloads and frames now all take ``sample_shape`` as an argument, instead
+  of some taking ``nchan``. [#429]
+
 Bug Fixes
 ---------
 
@@ -23,14 +51,10 @@ Other Changes and Additions
 - All baseband formats now support passing in template strings for stream
   readers and writers (e.g., ``'{file_nr:07d}.vdif'``). [#417]
 
-- All ``StreamWriters`` now require an explicit ``header0`` to be passed
-  in (as was already the case for DADA and GUPPI). Creation of a ``header0``
-  from keyword arguments is now done inside the opener. [#417]
-
 - The headers for VDIF and Mark 4 now expose standard ``complex_data``
   and ``sample_shape`` properties, to match what is done for the other
   headers. Mark 5B headers expose only ``complex_data``, as the sample
-  shape cannot be inferred from the header. [#414]
+  shape cannot be inferred from the header. [#414, #428]
 
 - General classes to help writing ``open`` and ``info`` functions are now
   provided in ``baseband.vlbi_base.FileOpener`` and ``FileInfo``. [#418]
@@ -248,7 +272,7 @@ Bug Fixes
   astropy 3.1). [#249]
 
 - Fixed rounding error when encoding 4-bit data using
-  `baseband.vlbi_base.encoding.encode_4bit_base`. [#250]
+  ``baseband.vlbi_base.encoding.encode_4bit_base``. [#250]
 
 - Added GUPPI/PUPPI to the list of file formats used by `baseband.open` and
   `baseband.file_info`.  [#251]

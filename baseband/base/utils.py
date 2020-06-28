@@ -3,9 +3,11 @@ from operator import index
 from math import gcd
 
 import numpy as np
+from astropy.utils import classproperty
 
 
-__all__ = ['lcm', 'bcd_decode', 'bcd_encode', 'byte_array', 'CRC', 'CRCStack']
+__all__ = ['lcm', 'bcd_decode', 'bcd_encode', 'fixedvalue', 'byte_array',
+           'CRC', 'CRCStack']
 
 
 def lcm(a, b):
@@ -74,6 +76,20 @@ def byte_array(pattern):
     return pattern.astype('<u4').view('u1')
 
 
+class fixedvalue(classproperty):
+    """Property that is fixed for all instances of a class.
+
+    Based on `astropy.utils.decorators.classproperty`, but with
+    a setter that passes if the value is identical to the fixed
+    value, and otherwise raises a `ValueError`.
+    """
+    def __set__(self, instance, value):
+        fixed_value = self.__get__(instance, type(instance))
+        if value != fixed_value:
+            raise ValueError(
+                f"'{self.fget.__name__}' can only be set to {fixed_value}.")
+
+
 class CRC:
     """Cyclic Redundancy Check.
 
@@ -91,7 +107,7 @@ class CRC:
 
     See Also
     --------
-    baseband.vlbi_base.utils.CRCStack :
+    baseband.base.utils.CRCStack :
         for calculating CRC on arrays where each entry represents a bit.
     """
 
@@ -204,7 +220,7 @@ class CRCStack(CRC):
 
     See Also
     --------
-    baseband.vlbi_base.utils.CRC :
+    baseband.base.utils.CRC :
         for calculating CRC for a single value or an array of values.
     """
     def __init__(self, polynomial):

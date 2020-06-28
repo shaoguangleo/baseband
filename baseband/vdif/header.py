@@ -12,8 +12,9 @@ import numpy as np
 import astropy.units as u
 from astropy.time import Time, TimeDelta
 
-from ..vlbi_base.header import (four_word_struct, eight_word_struct,
-                                fixedvalue, HeaderParser, VLBIHeaderBase)
+from ..base.header import (four_word_struct, eight_word_struct,
+                           HeaderParser, VLBIHeaderBase)
+from ..base.utils import fixedvalue
 from ..mark5b.header import Mark5BHeader
 
 
@@ -114,7 +115,8 @@ class VDIFHeader(VLBIHeaderBase, metaclass=VDIFHeaderMeta):
     # that is not a safe bet.
 
     _properties = ('frame_nbytes', 'payload_nbytes', 'bps', 'complex_data',
-                   'nchan', 'samples_per_frame', 'station', 'ref_time', 'time')
+                   'nchan', 'sample_shape', 'samples_per_frame',
+                   'station', 'ref_time', 'time')
     """Properties accessible/usable in initialisation for all VDIF headers."""
 
     _edv = None
@@ -345,6 +347,15 @@ class VDIFHeader(VLBIHeaderBase, metaclass=VDIFHeaderMeta):
         self['lg2_nchan'] = int(lg2_nchan)
 
     @property
+    def sample_shape(self):
+        """Shape of a sample in the payload (nchan,)."""
+        return (self.nchan,)
+
+    @sample_shape.setter
+    def sample_shape(self, sample_shape):
+        self.nchan, = sample_shape
+
+    @property
     def samples_per_frame(self):
         """Number of complete samples in the frame."""
         # Values are not split over word boundaries.
@@ -543,7 +554,7 @@ class VDIFLegacyHeader(VDIFNoSampleRateHeader):
 class VDIFBaseHeader(VDIFHeader):
     """Base for non-legacy VDIF headers that use 8 32-bit words."""
 
-    _header_parser = VDIFLegacyHeader._header_parser + HeaderParser(
+    _header_parser = VDIFLegacyHeader._header_parser | HeaderParser(
         (('legacy_mode', (0, 30, 1, False)),  # Repeat, to change default.
          ('edv', (4, 24, 8))))
 
@@ -581,7 +592,7 @@ class VDIFHeader0(VDIFBaseHeader, VDIFNoSampleRateHeader):
 class VDIFSampleRateHeader(VDIFBaseHeader):
     """Base for VDIF headers that include the sample rate (EDV= 1, 3, 4)."""
 
-    _header_parser = VDIFBaseHeader._header_parser + HeaderParser(
+    _header_parser = VDIFBaseHeader._header_parser | HeaderParser(
         (('sampling_unit', (4, 23, 1)),
          ('sampling_rate', (4, 0, 23)),
          ('sync_pattern', (5, 0, 32, 0xACABFEED))))
@@ -687,7 +698,7 @@ class VDIFHeader1(VDIFSampleRateHeader):
     See https://vlbi.org/wp-content/uploads/2019/03/vdif_extension_0x01.pdf
     """
     _edv = 1
-    _header_parser = VDIFSampleRateHeader._header_parser + HeaderParser(
+    _header_parser = VDIFSampleRateHeader._header_parser | HeaderParser(
         (('das_id', (6, 0, 64, 0x0)),))
 
     _invariants = (VDIFSampleRateHeader._invariants
@@ -701,7 +712,7 @@ class VDIFHeader3(VDIFSampleRateHeader):
     See https://vlbi.org/wp-content/uploads/2019/03/vdif_extension_0x03.pdf
     """
     _edv = 3
-    _header_parser = VDIFSampleRateHeader._header_parser + HeaderParser(
+    _header_parser = VDIFSampleRateHeader._header_parser | HeaderParser(
         (('frame_length', (2, 0, 24, 629)),  # Repeat, to set default.
          ('loif_tuning', (6, 0, 32, 0x0)),
          ('_7_28_4', (7, 28, 4, 0x0)),
@@ -746,7 +757,7 @@ class VDIFHeader2(VDIFBaseHeader, VDIFNoSampleRateHeader):
     """
     _edv = 2
 
-    _header_parser = VDIFBaseHeader._header_parser + HeaderParser(
+    _header_parser = VDIFBaseHeader._header_parser | HeaderParser(
         (('complex_data', (3, 31, 1, 0x0)),  # Repeat, to set default.
          ('bits_per_sample', (3, 26, 5, 0x1)),  # Repeat, to set default.
          ('pol', (4, 0, 1)),
@@ -777,8 +788,8 @@ class VDIFMark5BHeader(VDIFBaseHeader, VDIFNoSampleRateHeader, Mark5BHeader):
     _edv = 0xab
     # Repeat 'frame_length' to set default.
     _header_parser = (VDIFBaseHeader._header_parser
-                      + HeaderParser((('frame_length', (2, 0, 24, 1254)),))
-                      + HeaderParser(tuple(
+                      | HeaderParser((('frame_length', (2, 0, 24, 1254)),))
+                      | HeaderParser(tuple(
                           ((k if k != 'frame_nr' else 'mark5b_frame_nr'),
                            (v[0] + 4,) + v[1:])
                           for (k, v) in Mark5BHeader._header_parser.items())))
@@ -796,6 +807,7 @@ class VDIFMark5BHeader(VDIFBaseHeader, VDIFNoSampleRateHeader, Mark5BHeader):
         super().verify()
         assert self['frame_length'] == 1254  # payload+header=10000+32 bytes/8
         assert self['frame_nr'] == self['mark5b_frame_nr']
+        assert not self['complex_data']
         # Check consistency of time down to the second (since some Mark 5B
         # headers do not store 'bcd_fraction').
         day, seconds = divmod(self['seconds'], 86400)
@@ -811,10 +823,18 @@ class VDIFMark5BHeader(VDIFBaseHeader, VDIFNoSampleRateHeader, Mark5BHeader):
     def frame_nbytes(cls):
         return cls.nbytes + cls.payload_nbytes
 
+    @fixedvalue
+    def complex_data(cls):
+        return False
+
     def __setitem__(self, item, value):
-        super().__setitem__(item, value)
-        if item == 'frame_nr':
-            super().__setitem__('mark5b_frame_nr', value)
+        if item == 'complex_data':
+            # Pass by fixed-value setter - can only set to False.
+            self.complex_data = value
+        else:
+            super().__setitem__(item, value)
+            if item == 'frame_nr':
+                super().__setitem__('mark5b_frame_nr', value)
 
     def get_time(self, frame_rate=None):
         """

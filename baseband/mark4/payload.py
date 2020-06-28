@@ -13,8 +13,9 @@ from collections import namedtuple
 
 import numpy as np
 
-from ..vlbi_base.payload import VLBIPayloadBase
-from ..vlbi_base.encoding import encode_2bit_base, decoder_levels
+from ..base.payload import PayloadBase
+from ..base.encoding import encode_2bit_base, decoder_levels
+from ..base.utils import fixedvalue
 from .header import MARK4_DTYPES
 
 
@@ -299,7 +300,7 @@ def encode_8chan_2bit_fanout4(values):
     return reorder64(out).view('<u8')
 
 
-class Mark4Payload(VLBIPayloadBase):
+class Mark4Payload(PayloadBase):
     """Container for decoding and encoding Mark 4 payloads.
 
     Parameters
@@ -309,14 +310,18 @@ class Mark4Payload(VLBIPayloadBase):
         encode the payload.
     header : `~baseband.mark4.Mark4Header`, optional
         If given, used to infer the number of channels, bps, and fanout.
-    nchan : int, optional
-        Number of channels, used if ``header`` is not given.  Default: 1.
+    sample_shape : tuple
+        Shape of the samples (e.g., (nchan,)).  Default: (1,).
     bps : int, optional
         Number of bits per sample, used if ``header`` is not given.
         Default: 2.
     fanout : int, optional
         Number of tracks every bit stream is spread over, used if ``header`` is
         not given.  Default: 1.
+    magnitude_bit : int, optional
+        Magnitude bits for all tracks packed together. Used to index
+        encoder and decoder.  Default: assume standard Mark 4 payload,
+        for which number of channels, bps, and fanout suffice.
 
     Notes
     -----
@@ -338,7 +343,8 @@ class Mark4Payload(VLBIPayloadBase):
 
     _sample_shape_maker = namedtuple('SampleShape', 'nchan')
 
-    def __init__(self, words, header=None, nchan=1, bps=2, fanout=1):
+    def __init__(self, words, header=None, *, sample_shape=(1,), bps=2,
+                 fanout=1, magnitude_bit=None, complex_data=False):
         if header is not None:
             magnitude_bit = header['magnitude_bit']
             bps = 2 if magnitude_bit.any() else 1
@@ -351,37 +357,46 @@ class Mark4Payload(VLBIPayloadBase):
 
             ntrack = header.ntrack
             fanout = header.fanout
-            nchan = ntrack // (bps * fanout)
+            sample_shape = (ntrack // (bps * fanout),)
             self._nbytes = header.payload_nbytes
         else:
-            ntrack = nchan * bps * fanout
+            ntrack = sample_shape[0] * bps * fanout
             magnitude_bit = None
 
         self._dtype_word = MARK4_DTYPES[ntrack]
         self.fanout = fanout
-        super().__init__(words, sample_shape=(nchan,),
-                         bps=bps, complex_data=False)
-        self._coder = (nchan, (bps if magnitude_bit is None
-                               else magnitude_bit), fanout)
+        super().__init__(words, sample_shape=sample_shape,
+                         bps=bps, complex_data=complex_data)
+        self._coder = (self.sample_shape.nchan,
+                       (self.bps if magnitude_bit is None else magnitude_bit),
+                       self.fanout)
+
+    @fixedvalue
+    def complex_data(self):
+        return False
 
     @classmethod
-    def fromfile(cls, fh, header):
+    def fromfile(cls, fh, header=None, **kwargs):
         """Read payload from filehandle and decode it into data.
 
-        The payload_nbytes, number of channels, bits per sample, and fanout
-        ratio are all taken from the header.
+        Parameters
+        ----------
+        fh : filehandle
+            From which data is read.
+        header : `~baseband.mark4.Mark4Header`
+            Used to infer ``payload_nbytes``, ``bps``, ``sample_shape``, and
+            ``dtype``.  If not given, those have to be passed in.
         """
-        s = fh.read(header.payload_nbytes)
-        if len(s) < header.payload_nbytes:
-            raise EOFError("could not read full payload.")
-        return cls(np.frombuffer(s, dtype=header.stream_dtype), header)
+        if header is not None:
+            kwargs.setdefault('dtype', header.stream_dtype)
+        return super().fromfile(fh, header=header, **kwargs)
 
     @classmethod
     def fromdata(cls, data, header):
         """Encode data as payload, using header information."""
         if data.dtype.kind == 'c':
             raise ValueError("Mark4 format does not support complex data.")
-        if header.nchan != data.shape[-1]:
+        if header.sample_shape != data.shape[1:]:
             raise ValueError("header is for {0} channels but data has {1}"
                              .format(header.nchan, data.shape[-1]))
         words = np.empty(header.payload_nbytes // header.stream_dtype.itemsize,

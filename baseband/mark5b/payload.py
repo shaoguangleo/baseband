@@ -12,8 +12,9 @@ from collections import namedtuple
 
 import numpy as np
 
-from ..vlbi_base.payload import VLBIPayloadBase
-from ..vlbi_base.encoding import encode_2bit_base, decoder_levels
+from ..base.payload import PayloadBase
+from ..base.encoding import encode_2bit_base, decoder_levels
+from ..base.utils import fixedvalue
 
 
 __all__ = ['init_luts', 'decode_1bit', 'decode_2bit',
@@ -108,7 +109,7 @@ def encode_2bit(values):
 encode_2bit.__doc__ = encode_2bit_base.__doc__
 
 
-class Mark5BPayload(VLBIPayloadBase):
+class Mark5BPayload(PayloadBase):
     """Container for decoding and encoding VDIF payloads.
 
     Parameters
@@ -130,21 +131,15 @@ class Mark5BPayload(VLBIPayloadBase):
 
     _sample_shape_maker = namedtuple('SampleShape', 'nchan')
 
-    def __init__(self, words, nchan=1, bps=2, complex_data=False):
-        if complex_data:
-            raise ValueError("Mark5B format does not support complex data.")
-
-        super().__init__(words, sample_shape=(nchan,),
-                         bps=bps, complex_data=False)
+    @fixedvalue
+    def complex_data(self):
+        return False
 
     @classmethod
-    def fromdata(cls, data, bps=2):
+    def fromdata(cls, data, *, bps=2):
         """Encode data as payload, using a given number of bits per sample.
 
         It is assumed that the last dimension is the number of channels.
         """
-        if data.dtype.kind == 'c':
-            raise ValueError("Mark5B format does not support complex data.")
-        encoder = cls._encoders[bps]
-        words = encoder(data).view(cls._dtype_word)
-        return cls(words, nchan=data.shape[-1], bps=bps)
+        # Override just to remove option of passing in header.
+        return super().fromdata(data, bps=bps)

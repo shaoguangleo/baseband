@@ -1,5 +1,5 @@
 # Licensed under the GPLv3 - see LICENSE
-from ..vlbi_base.frame import VLBIFrameBase
+from ..base.frame import FrameBase
 from .header import GSBHeader
 from .payload import GSBPayload
 
@@ -7,7 +7,7 @@ from .payload import GSBPayload
 __all__ = ['GSBFrame']
 
 
-class GSBFrame(VLBIFrameBase):
+class GSBFrame(FrameBase):
     """Frame encapsulating GSB rawdump or phased data.
 
     For rawdump data, lines in the timestamp file are associated with single
@@ -57,8 +57,9 @@ class GSBFrame(VLBIFrameBase):
     _payload_class = GSBPayload
 
     @classmethod
-    def fromfile(cls, fh_ts, fh_raw, payload_nbytes=1 << 24, nchan=1, bps=4,
-                 complex_data=False, valid=True, verify=True):
+    def fromfile(cls, fh_ts, fh_raw, payload_nbytes=1 << 22,
+                 sample_shape=(1,), bps=4, complex_data=False,
+                 valid=True, verify=True):
         """Read a frame from timestamp and raw data filehandles.
 
         Any arguments beyond the filehandle are used to help initialize the
@@ -74,10 +75,10 @@ class GSBFrame(VLBIFrameBase):
             containing tuples with pairs of handles for a phased one.  E.g.,
             ``((L1, L2), (R1, R2))`` for left and right polarisations.
         payload_nbytes : int, optional
-            Size of the individual payloads in bytes.  Default: ``2**24``
-            (16 MB).
-        nchan : int, optional
-            Number of channels.  Default: 1.
+            Size of the individual payloads in bytes.  Default: ``2**22``
+            (4 MB).
+        sample_shape : tuple, optional
+            Shape of the samples (e.g., (nchan,)).  Default: (1,).
         bps : int, optional
             Bits per elementary sample.  Default: 4.
         complex_data : bool, optional
@@ -90,10 +91,9 @@ class GSBFrame(VLBIFrameBase):
             Whether to verify consistency of the frame parts.  Default: `True`.
         """
         header = cls._header_class.fromfile(fh_ts, verify=verify)
-        payload = cls._payload_class.fromfile(fh_raw,
-                                              payload_nbytes=payload_nbytes,
-                                              nchan=nchan, bps=bps,
-                                              complex_data=complex_data)
+        payload = cls._payload_class.fromfile(
+            fh_raw, payload_nbytes=payload_nbytes,
+            sample_shape=sample_shape, bps=bps, complex_data=complex_data)
         return cls(header, payload, valid=valid, verify=verify)
 
     def tofile(self, fh_ts, fh_raw):
@@ -110,6 +110,31 @@ class GSBFrame(VLBIFrameBase):
         """
         self.header.tofile(fh_ts)
         self.payload.tofile(fh_raw)
+
+    @classmethod
+    def fromdata(cls, data, header=None, *,
+                 bps=4, valid=True, verify=True, **kwargs):
+        """Construct frame from data and header.
+
+        Parameters
+        ----------
+        data : `~numpy.ndarray`
+            Array holding data to be encoded.
+        header : ``cls._header_class``
+            Header for the frame.
+        bps : int, optional
+            Bits per elementary sample.  Default: 4.
+        valid : bool, optional
+            Whether this payload contains valid data.
+        verify : bool, optional
+            Whether to verify the header and frame correctness.
+        **kwargs :
+            Used to intialize the header, if not given.
+        """
+        if header is None:
+            header = cls._header_class.fromvalues(verify=verify, **kwargs)
+        payload = cls._payload_class.fromdata(data, bps=bps)
+        return cls(header, payload, valid=valid, verify=verify)
 
     @property
     def nbytes(self):
