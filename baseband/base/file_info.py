@@ -8,13 +8,12 @@ import operator
 import warnings
 from collections import OrderedDict
 
-import numpy as np
 from astropy import units as u
 from astropy.time import Time
 
 
 __all__ = ['info_item', 'InfoMeta', 'InfoBase',
-           'FileReaderInfo', 'StreamReaderInfo']
+           'FileReaderInfo', 'StreamReaderInfo', 'NoInfo']
 
 
 class info_item:
@@ -87,7 +86,7 @@ class info_item:
         self.default = default
         self.missing = missing
         self.copy = copy
-        self.__doc__ = doc
+        self.__doc__ = self.doc = doc
 
     def __get__(self, instance, cls=None):
         if instance is None:
@@ -114,6 +113,15 @@ class info_item:
 
         setattr(instance, self.attr, value)
         return value
+
+    def __str__(self):
+        return f"{self.attr}: " + ', '.join(
+            [f"{a}={getattr(self, a)}"
+             for a in ('needs', 'default', 'doc', 'missing', 'copy')
+             if getattr(self, a) is not None])
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({str(self).replace(':', ',')})"
 
 
 class InfoMeta(type):
@@ -212,40 +220,44 @@ class InfoBase(metaclass=InfoMeta):
     def __repr__(self):
         # Use the repr for display of file information.
         if self._parent is None:
-            return super().__repr__()
+            return '\n'.join(
+                [f"{self.__class__.__name__} (unbound) with attributes:"]
+                + [f"  {getattr(self.__class__, attr)}"
+                   for attr in self.attr_names])
 
-        if not self:
-            if self._parent.closed:
-                return 'File closed. Not parsable.'
-            else:
-                return 'Not parsable. Wrong format?'
+        if any('closed' in str(error) for error in self.errors.values()):
+            return "File closed. Not parsable."
 
-        result = ''
+        result = []
         for attr in self.attr_names:
             value = getattr(self, attr)
             if isinstance(value, dict):
-                prefix = '\n{}: '.format(attr)
+                result.append('')
+                prefix = f"{attr}: "
                 if attr == 'missing':
                     for msg in sorted(set(self.missing.values())):
                         keys = sorted(set(key for key in self.missing
                                           if self.missing[key] == msg))
-                        result += "{} {}: {}\n".format(prefix,
-                                                       ', '.join(keys), msg)
-                        prefix = ' ' * (len(attr) + 2)
+                        result.append(f"{prefix} {', '.join(keys)}: {msg}")
+                        prefix = ' ' * len(prefix)
                 else:
                     for key, val in value.items():
                         str_val = str(val) or repr(val)
-                        result += "{} {}: {}\n".format(prefix, key, str_val)
-                        prefix = ' ' * (len(attr) + 2)
+                        result.append(f"{prefix} {key}: {str_val}")
+                        prefix = ' ' * len(prefix)
 
             elif value is not None:
                 if isinstance(value, Time):
                     value = Time(value, format='isot', precision=9)
                 elif attr == 'sample_rate':
                     value = value.to(u.MHz)
-                result += '{} = {}\n'.format(attr, value)
+                result.append(f"{attr} = {value}")
 
-        return result
+        if not self:
+            result.append('\nNot parsable. Wrong format?')
+
+        result.append('')
+        return '\n'.join(result)
 
 
 class FileReaderInfo(InfoBase):
@@ -367,11 +379,7 @@ class FileReaderInfo(InfoBase):
     def decodable(self):
         """Whether decoding the first frame worked."""
         # Getting the first sample can fail if we don't have the right decoder.
-        first_sample = self.frame0[0]
-
-        if not isinstance(first_sample, np.ndarray):
-            raise TypeError('first sample is not an ndarray')
-
+        self.frame0[0]
         return True
 
     @info_item(needs='header0')
@@ -395,8 +403,8 @@ class FileReaderInfo(InfoBase):
             return int(number_of_frames)
         else:
             self.warnings['number_of_frames'] = (
-                'file contains non-integer number ({}) of frames'
-                .format(number_of_frames))
+                f"file contains non-integer number "
+                f"({number_of_frames}) of frames")
             return None
 
     @info_item(needs='header0')
@@ -416,9 +424,11 @@ class FileReaderInfo(InfoBase):
         return self.frame_rate * self.samples_per_frame
 
     def __repr__(self):
-        result = 'File information:\n'
-        result += super().__repr__()
-        return result
+        result = super().__repr__()
+        if self._parent is None:
+            return result
+
+        return 'File information:\n' + result
 
 
 class StreamReaderInfo(InfoBase):
@@ -477,16 +487,6 @@ class StreamReaderInfo(InfoBase):
     warnings = info_item('warnings', needs='file_info', copy=True,
                          default=OrderedDict())
 
-    def __init__(self, parent=None):
-        super().__init__(parent=parent)
-        if parent is not None and getattr(self.file_info, 'errors'):
-            # Remove errors from file_info if we actually got the item.
-            # (e.g., start_time if frame_rate couldn't be calculated.)
-            for key in self.errors:
-                if (key in self.file_info.errors
-                        and getattr(self, key, None) is not None):
-                    del self.errors[key]
-
     @info_item
     def file_info(self):
         """Information from the underlying file reader."""
@@ -532,7 +532,7 @@ class StreamReaderInfo(InfoBase):
                         # If we know this is the right one, raise,
                         # otherwise start bisection.
                         if frame == good + 1:
-                            msg = 'While reading at {}: '.format(fh.tell())
+                            msg = f"While reading at {fh.tell()}: "
                             if isinstance(exc, UserWarning):
                                 self.warnings['continuous'] = msg + str(exc)
                                 return 'fixable gaps'
@@ -573,8 +573,11 @@ class StreamReaderInfo(InfoBase):
         return info
 
     def __repr__(self):
-        result = 'Stream information:\n'
-        result += super().__repr__()
+        result = super().__repr__()
+        if self._parent is None:
+            return result
+
+        result = 'Stream information:\n' + result
         file_info = getattr(self, 'file_info', None)
         if file_info is not None:
             # Add information from the raw file, but skip atttributes and
@@ -588,3 +591,24 @@ class StreamReaderInfo(InfoBase):
                 file_info.attr_names = raw_attrs
 
         return result
+
+
+class NoInfo:
+    """Info class for cases where no useful information was returned.
+
+    Any instance evaluates as `False`, to indicate a file for which
+    the information is given is not readable.
+
+    Parameters
+    ----------
+    info : str
+        Information that will be displayed using ``repr``.
+    """
+    def __init__(self, info=None):
+        self.info = info
+
+    def __bool__(self):
+        return False
+
+    def __repr__(self):
+        return f"No Info: {self.info}"
