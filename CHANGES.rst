@@ -1,8 +1,31 @@
-4.0 (unreleased)
+4.1 (unreleased)
 ================
 
-- This future version will likely only support python 3.7, numpy 1.17 and
-  astropy 4.0.
+New Features
+------------
+
+API Changes
+-----------
+
+Other Changes and Additions
+---------------------------
+
+
+4.0.1 (2020-07-31)
+==================
+
+Bug Fixes
+---------
+
+- Allow the GUPPI reader to assume channel-first ordering by default, i.e.,
+  no longer insist that PKTFMT is one of '1SFA' or 'SIMPLE'. Instead, ``info``
+  will include a warning for formats not known to work. [#453]
+
+4.0 (2020-07-18)
+================
+
+- The minimum versions required by baseband are now python 3.7, numpy 1.17
+  and astropy 4.0.
 
 - Baseband now requires the (very small) ``entrypoints`` package.
 
@@ -12,6 +35,11 @@ New Features
 - Baseband now provides an ``baseband.io`` entry point, which allows other
   packages to make new readers accessible to baseband by defining an entry
   point in their ``setup.cfg``. [#418]
+
+- Similarly, baseband also provides an ``baseband.tasks`` entry point, which
+  allows other packages to define tasks useful for processing baseband
+  data by defining an entry point in their ``setup.cfg``. This is primarily
+  intended for the future ``baseband-tasks`` package. [#445]
 
 API Changes
 -----------
