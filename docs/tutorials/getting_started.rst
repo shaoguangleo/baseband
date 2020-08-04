@@ -13,8 +13,11 @@ Baseband <using_baseband>`.
 For installation instructions, please see :ref:`Installing Baseband
 <install_baseband>`.
 
-When using Baseband, we typically will also use `numpy`, `astropy.units`, and
-`astropy.time.Time`. Let's import all of these::
+When using Baseband, we typically will also use
+numpy_, the `astropy.units <https://docs.astropy.org/en/stable/units>`_ module,
+and :class:`~astropy.time.Time` from the
+`astropy.time <https://docs.astropy.org/en/stable/time>`_ module.
+Let's import all of these::
 
     >>> import baseband
     >>> import numpy as np
@@ -30,12 +33,14 @@ For this tutorial, we'll use two sample files::
 
     >>> from baseband.data import SAMPLE_VDIF, SAMPLE_MARK5B
 
-The first file is a VDIF one created from `EVN <https://www.evlbi.org/>`_/`VLBA
-<https://public.nrao.edu/telescopes/vlba/>`_ observations of `Black Widow
-pulsar PSR B1957+20 <https://en.wikipedia.org/wiki/Black_Widow_Pulsar>`_,
-while the second is a Mark 5B from EVN/`WSRT
-<https://www.astron.nl/radio-observatory/public/public-0>`_ observations of the
-same pulsar.
+The first file is a VDIF one created from EVN_/VLBA_ observations of
+`Black Widow pulsar PSR B1957+20
+<https://en.wikipedia.org/wiki/Black_Widow_Pulsar>`_, while the second
+is a Mark 5B from EVN_/WSRT_ observations of the same pulsar.
+
+.. _EVN: https://www.evlbi.org/
+.. _VLBA: https://public.nrao.edu/telescopes/vlba/
+.. _WSRT: https://www.astron.nl/radio-observatory/public/public-0
 
 To open the VDIF file::
 
@@ -135,7 +140,7 @@ For an overview of the file, we can either print ``fh_vdif`` itself, or use the
         bps=2, complex_data=False, edv=3, station=65532,
         start_time=2014-06-16T05:56:07.000000000>
     >>> fh_vdif.info
-    Stream information:
+    VDIFStream information:
     start_time = 2014-06-16T05:56:07.000000000
     stop_time = 2014-06-16T05:56:07.001250000
     sample_rate = 32.0 MHz
@@ -149,7 +154,7 @@ For an overview of the file, we can either print ``fh_vdif`` itself, or use the
     checks:  decodable: True
              continuous: no obvious gaps
     <BLANKLINE>
-    File information:
+    VDIFFile information:
     edv = 3
     number_of_frames = 16
     thread_ids = [0, 1, 2, 3, 4, 5, 6, 7]
