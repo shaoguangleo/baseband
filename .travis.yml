@@ -7,7 +7,7 @@ git:
 os:
     - linux
 
-dist: bionic
+dist: focal
 
 # The apt packages below are needed for sphinx builds. A full list of packages
 # that can be included can be found here:
@@ -46,11 +46,6 @@ env:
         - TOXARGS='-v'
         - TOXPOSARGS=''
 
-        # Also allow tests without tox, getting our packages using apt;
-        # Here, we need to include python3-attr, since the version on bionic
-        # is too old.
-        - APT_DEPENDENCIES='python3-astropy python3-setuptools python3-entrypoints python3-attr'
-
         # If there are matplotlib or other GUI tests, uncomment the following
         # line to use the X virtual framebuffer.
         # - SETUP_XVFB=True
@@ -84,10 +79,10 @@ jobs:
           env: TOXENV="py37-test-oldestdeps-cov"
 
         # Regularly try Astropy dev with the latest Python
-        - name: Python 3.8 with developer version of astropy
+        - name: Python 3.9 with developer version of astropy
           stage: Cron tests
-          python: 3.8
-          env: TOXENV=py38-test-devdeps
+          python: 3.9
+          env: TOXENV=py39-test-devdeps
 
         # Also try the big-endian s390x architecture, in the
         # process checking that installing dependencies with apt works.
@@ -95,33 +90,39 @@ jobs:
           stage: Comprehensive tests
           arch: s390x
           language: c
+          addons:
+            apt:
+              packages:
+              - python3-astropy
+              - python3-entrypoints
+              - python3-pip
           env: SETUP_METHOD='apt'
 
         # Try on Windows
         - os: windows
           language: c
           stage: Comprehensive tests
-          name: Python 3.7 on Windows
-          env: PYTHON_VERSION=3.7
-               TOXENV='py37-test'
+          name: Python 3.8 on Windows
+          env: PATH=/c/Python38:/c/Python38/Scripts:$PATH
+               TOXENV='py38-test'
 
 
-install:
-
-    # language: python is only available for Linux, so for other platforms
-    # we need to use ci-helpers to set up Python.
-    - if [[ $TRAVIS_OS_NAME == osx || $TRAVIS_OS_NAME == windows ]]; then
+before_install:
+    # language: python is only available for Linux.
+    # For Windows, we use choco to install Python.
+    - if [[ $TRAVIS_OS_NAME == windows ]]; then
+        choco install --no-progress python --version 3.8;
+        python -m pip install --upgrade pip;
+      fi
+    # For OSX, we use ci-helpers to set up Python.
+    - if [[ $TRAVIS_OS_NAME == osx ]]; then
         git clone git://github.com/astropy/ci-helpers.git;
         source ci-helpers/travis/setup_conda.sh;
       fi
 
+install:
     - if [[ $SETUP_METHOD == 'tox' ]]; then
         pip install tox;
-      else
-        curl https://ftp-master.debian.org/keys/archive-key-10.asc | sudo apt-key add -;
-        echo "deb http://ftp.us.debian.org/debian testing main" | sudo tee -a /etc/apt/sources.list;
-        sudo apt-get -qq update;
-        sudo apt-get install -y --no-install-recommends ${APT_DEPENDENCIES};
       fi
 
     - if [[ $TOXENV == *-cov ]]; then
