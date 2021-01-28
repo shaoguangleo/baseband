@@ -10,6 +10,39 @@ API Changes
 Other Changes and Additions
 ---------------------------
 
+- Entry points are now handled via ``importlib.metadata`` (or the python 3.7
+  backport ``importlib_metadata``), meaning baseband no longer requires the
+  ``entrypoints`` package. [#477]
+
+
+4.0.3 (2020-11-26)
+==================
+
+Bug Fixes
+---------
+
+- Ensure that ``pathlib.Path`` objects are recognized as valid in the various
+  openers. [#467]
+
+- Raise a proper ``FileNotFoundError`` instead of an obscure ``AttributeError``
+  if trying to get ``file_info`` on a non-existing file. [#467]
+
+- Pass on all "irrelevant" arguments not understood by ``file_info`` to the
+  general opener, so they can be used or raise ``TypeError`` in a place where
+  it will be clearer why that happens. [#468]
+
+- Support for VDIF EDV3 data with payload size of 1000 bytes. [#456]
+
+
+4.0.2 (2020-10-23)
+==================
+
+Bug Fixes
+---------
+
+- Fix the GUPPIHeader class incorrectly ignoring the STT_OFFS header
+  keyword. [#457]
+
 
 4.0.1 (2020-07-31)
 ==================

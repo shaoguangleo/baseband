@@ -19,8 +19,6 @@ FORMATS : list
 """
 import sys
 
-import entrypoints
-
 
 __all__ = ['open', 'file_info']
 
@@ -42,6 +40,11 @@ def __getattr__(attr):
     and, if found, tries loading the entry.  If that fails, the entry
     is added to _bad_entries to ensure it does not recur.
     """
+    if sys.version_info >= (3, 8):
+        from importlib.metadata import EntryPoint, entry_points
+    else:
+        from importlib_metadata import EntryPoint, entry_points
+
     if attr.startswith('_') or attr in _bad_entries:
         raise AttributeError(f"module {__name__!r} has no attribute {attr!r}")
 
@@ -52,13 +55,18 @@ def __getattr__(attr):
             # in part to set some order, but also so things work even in a
             # pure source checkout, where entry points are missing.
             _entries.update({
-                fmt: entrypoints.EntryPoint(fmt, 'baseband.'+fmt, '')
+                fmt: EntryPoint(fmt, 'baseband.'+fmt, '')
                 for fmt in ('dada', 'guppi', 'mark4', 'mark5b', 'vdif', 'gsb')
             })
 
-        _entries.update(entrypoints.get_group_named('baseband.io'))
+        # Note: again do not presume the entry points exist, since we may
+        # be in a pure source checkout.
+        _entries.update({entry_point.name: entry_point for entry_point
+                         in entry_points().get('baseband.io', [])})
+        # Need python >= 3.9 to be able to do entry.attr.
         FORMATS.extend([name for name, entry in _entries.items()
-                        if not (entry.object_name or name in FORMATS)])
+                        if not (entry.value.partition(':')[2]
+                                or name in FORMATS)])
         if attr == 'FORMATS':
             return FORMATS
 
@@ -210,11 +218,11 @@ def open(name, mode='rs', format=None, **kwargs):
             raise ValueError(f"arguments inconsistent with this {format} file "
                              f"were passed in: {info.inconsistent_kwargs}")
 
-        if getattr(info, 'irrelevant_kwargs', False):
-            raise TypeError(f"open() got unexpected keyword arguments "
-                            f"{info.irrelevant_kwargs}")
-
         kwargs = getattr(info, 'used_kwargs', kwargs)
+        # We add any arguments deemed irrelevant for opening the file, since
+        # either they might just give some extra information (say, squeeze)
+        # or they will just lead to a TypeError, in likely a more useful place.
+        kwargs.update(getattr(info, 'irrelevant_kwargs', {}))
 
     module = getattr(__self__, format)
     return module.open(name, mode=mode, **kwargs)
